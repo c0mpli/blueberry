@@ -60,6 +60,12 @@ fun BlueberryApp(
             onSwipeUp = viewModel::openDrawer,
         )
 
+        // Above the surface, below the drawer: the glow frames the conversation, and the drawer
+        // is a different mode that should not look like it is listening.
+        if (screen == Screen.HOME) {
+            AmbientBorder(state = visualStateOf(state), level = levelOf(state))
+        }
+
         AnimatedVisibility(
             visible = screen == Screen.DRAWER,
             enter = slideInVertically { it },
@@ -118,14 +124,19 @@ private fun VoiceSurface(
  * them — it changes only its motion. Moving it would read as a new screen rather than a change of
  * turn, which is the thing this is trying to make obvious.
  */
+internal fun visualStateOf(state: UiState): VoiceVisualState = when (state) {
+    is UiState.Listening -> VoiceVisualState.LISTENING
+    is UiState.Thinking -> VoiceVisualState.THINKING
+    else -> VoiceVisualState.IDLE
+}
+
+internal fun levelOf(state: UiState): Float =
+    (state as? UiState.Listening)?.let { normaliseRms(it.level) } ?: 0f
+
 @Composable
 private fun VoiceStage(state: UiState) {
-    val visual = when (state) {
-        is UiState.Listening -> VoiceVisualState.LISTENING
-        is UiState.Thinking -> VoiceVisualState.THINKING
-        else -> VoiceVisualState.IDLE
-    }
-    val level = (state as? UiState.Listening)?.let { normaliseRms(it.level) } ?: 0f
+    val visual = visualStateOf(state)
+    val level = levelOf(state)
 
     val caption = when (state) {
         is UiState.Idle -> "tap to speak"
@@ -173,6 +184,7 @@ private fun VoiceStage(state: UiState) {
 
 @Composable
 private fun ResultCard(state: UiState.Done) {
+    val visual = state.result as? RouterResult.Visual
     val (headline, detail) = when (val r = state.result) {
         is RouterResult.Action -> r.label to null
         is RouterResult.Saved -> "Saved" to "${r.text}  ·  ${r.target}"
@@ -200,6 +212,11 @@ private fun ResultCard(state: UiState.Done) {
                     MaterialTheme.colorScheme.onSurface
                 },
             )
+            // Never block the visual on prose or the prose on the visual: the narration shows
+            // immediately and the chart renders underneath it.
+            visual?.let {
+                ChartCanvas(it.chart, Modifier.padding(top = 4.dp))
+            }
             detail?.let {
                 Text(
                     text = it,

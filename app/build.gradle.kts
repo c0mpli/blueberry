@@ -18,6 +18,28 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1"
+
+        ndk {
+            // The phone and the emulator are both arm64. Building x86_64 as well roughly doubles a
+            // llama.cpp build for a target nothing here runs on.
+            abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_shared")
+                cppFlags += "-O3"
+            }
+        }
+    }
+
+    ndkVersion = "30.0.15729638"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "4.1.2"
+        }
     }
 
     buildTypes {
@@ -61,6 +83,9 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.documentfile)
     implementation(libs.kotlinx.coroutines.android)
+    // Library only, no compiler plugin: the grammar guarantees the JSON shape, so this only ever
+    // parses to a JsonElement tree and never needs @Serializable classes.
+    implementation(libs.kotlinx.serialization.json)
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

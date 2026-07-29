@@ -18,6 +18,20 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+
+        <!--
+          Required at targetSdk >= 30, and the failure mode is silent: without it the bind to the
+          TTS engine is filtered by package visibility and every speak() returns ERROR forever with
+          nothing in logcat.
+        -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+
+        <!-- Same rule for resolving the speech recogniser. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
     </queries>
 
     <application

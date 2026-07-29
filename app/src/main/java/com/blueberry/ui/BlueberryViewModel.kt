@@ -14,16 +14,24 @@ import com.blueberry.router.RouteContext
 import com.blueberry.router.Router
 import com.blueberry.router.RouterResult
 import com.blueberry.router.Session
+import com.blueberry.llm.LocalLlm
+import com.blueberry.llm.ModelRepo
+import com.blueberry.llm.SwappableLlm
 import com.blueberry.tools.IntentFactory
 import com.blueberry.voice.AsrEvent
 import com.blueberry.voice.TranscriptSourceFactory
 import com.blueberry.voice.TranscriptSource
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The loop, shared by every entry point.
@@ -38,7 +46,14 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     private val appCatalogue = AppCatalogue(app)
     private val vault = VaultRepo(app, prefs)
     private val intents = IntentFactory(app, appCatalogue)
-    private val router = Router()
+    private val modelRepo = ModelRepo(app)
+
+    /** Filled in once the weights are loaded; empty until then. */
+    private val llmSlot = SwappableLlm()
+
+    private val router = Router(llm = llmSlot)
+
+    val modelStatus: StateFlow<ModelRepo.Status> = modelRepo.status
 
     /**
      * The microphone in release builds; the microphone plus adb-injected transcripts in debug ones.
@@ -59,6 +74,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     private var stabilityJob: Job? = null
     private var lastPartial: String = ""
     private var catalogueCallback: android.content.pm.LauncherApps.Callback? = null
+    private var local: LocalLlm? = null
 
     init {
         viewModelScope.launch { refreshCatalogue() }
@@ -68,6 +84,59 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             transcripts.events.collect(::onAsrEvent)
         }
+        viewModelScope.launch(Dispatchers.IO) { prepareModel() }
+    }
+
+    /**
+     * Bring the on-device model up, without ever blocking the interaction path. Blueberry has to be
+     * usable on the seeded resolution cache alone while this runs — that is the entire reason the
+     * cache exists.
+     */
+    private suspend fun prepareModel() {
+        val preset = MODEL_PRESET
+        var status = modelRepo.refresh(preset)
+
+        if (status !is ModelRepo.Status.Ready) {
+            // First run downloads the weights, but only on an unmetered connection — 253 MB is not
+            // something to spend on someone's mobile data without asking.
+            if (!unmetered()) {
+                Log.i(TAG, "model absent and the connection is metered; leaving it for settings")
+                return
+            }
+            status = modelRepo.download(preset)
+        }
+
+        val file = (status as? ModelRepo.Status.Ready)?.file ?: return
+        val llm = LocalLlm(
+            modelFile = file,
+            contextTokens = preset.contextTokens,
+            stateDir = File(getApplication<Application>().filesDir, "kv"),
+        )
+        if (llm.load()) {
+            // Show the answer as it is produced. A phone decodes fast enough to read along with,
+            // and waiting for the last token before showing the first is what made this feel hung.
+            llm.onPartialAnswer = { partial ->
+                if (partial.isNotBlank()) {
+                    _uiState.value = UiState.Done(RouterResult.Answer(partial), fired = false)
+                }
+            }
+            llmSlot.delegate = llm
+            local = llm
+            Log.i(TAG, "on-device model ready")
+        } else {
+            Log.w(TAG, "model failed to load: ${llm.lastError}")
+        }
+    }
+
+    private fun unmetered(): Boolean {
+        val cm = getApplication<Application>().getSystemService(ConnectivityManager::class.java)
+        val caps = cm?.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+
+    /** Exposed so settings can report status and trigger a download by hand. */
+    fun downloadModel() {
+        viewModelScope.launch(Dispatchers.IO) { prepareModel() }
     }
 
     private fun refreshCatalogue() {
@@ -207,9 +276,16 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = UiState.Thinking(text)
         viewModelScope.launch {
             val ctx = context()
-            val result = router.route(text, ctx, session)
+            val result = withTimeoutOrNull(MODEL_TIMEOUT_MS) { router.route(text, ctx, session) }
+                ?: RouterResult.Failed("That took too long — try again, or use the app drawer.")
             session.record(Session.Turn(text, result))
-            complete(text, result, ctx)
+            // A streamed answer has already been shown token by token; replacing it with the same
+            // text would flicker the card.
+            if (result is RouterResult.Answer && _uiState.value.let { it is UiState.Done && it.result is RouterResult.Answer }) {
+                _uiState.value = UiState.Done(result, fired = false)
+            } else {
+                complete(text, result, ctx)
+            }
         }
     }
 
@@ -242,6 +318,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         catalogueCallback?.let { appCatalogue.stopObserving(it) }
+        local?.close()
         transcripts.release()
         super.onCleared()
     }
@@ -249,6 +326,10 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "Blueberry"
         const val STABILITY_MS = 300L
+        val MODEL_PRESET = ModelRepo.Preset.FUNCTION_GEMMA_270M
+
+        /** Includes the one-off cold prefill on the first turn after a catalogue change. */
+        const val MODEL_TIMEOUT_MS = 20_000L
     }
 }
 

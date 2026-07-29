@@ -12,5 +12,14 @@
                 <action android:name="com.blueberry.INJECT_TRANSCRIPT" />
             </intent-filter>
         </receiver>
+
+        <!-- Debug only. Runs the on-device model end to end from adb and logs stage timings. -->
+        <receiver
+            android:name="com.blueberry.debug.LlmProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.blueberry.PROBE_LLM" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

@@ -34,6 +34,7 @@ class ToolRegistry(private val tools: Map<String, Tool>) {
                 Tools.PLAY_MEDIA to Tool(::buildPlayMedia),
                 Tools.NAVIGATE to Tool(::buildNavigate),
                 Tools.SEARCH_WEB to Tool(::buildSearchWeb),
+                Tools.SHOW_CHART to Tool(::buildShowChart),
             )
         )
     }
@@ -49,6 +50,7 @@ object Tools {
     const val PLAY_MEDIA = "play_media"
     const val NAVIGATE = "navigate"
     const val SEARCH_WEB = "search_web"
+    const val SHOW_CHART = "show_chart"
 }
 
 /** Platform action strings, spelled out here so the router never imports `android.content`. */
@@ -119,6 +121,32 @@ private fun buildNavigate(call: ToolCall, ctx: RouteContext): RouterResult {
     return RouterResult.Action(
         spec = ActionSpec.Launch(action = AndroidActions.VIEW, uri = "google.navigation:q=${encode(place)}"),
         label = "Navigate to $place",
+    )
+}
+
+/**
+ * The canvas. The model picks a shape and supplies data; Blueberry draws it.
+ *
+ * Deliberately not "emit HTML": that would be a thousand-plus tokens of markup, a minute of decode
+ * on a phone, frequently malformed, and impossible to constrain with a grammar. Emitting ~30 tokens
+ * of data into a fixed template is short, grammar-constrainable, and can never render broken.
+ *
+ * The trade is that arbitrary custom visuals are gone — six shapes done well instead of infinite
+ * shapes done unreliably.
+ */
+private fun buildShowChart(call: ToolCall, ctx: RouteContext): RouterResult {
+    val kindName = call["kind"]?.spoken?.trim()?.uppercase().orEmpty()
+    val kind = ChartKind.entries.firstOrNull { it.name == kindName } ?: ChartKind.BAR
+    val title = call["title"]?.spoken?.trim().orEmpty().ifEmpty { "Chart" }
+
+    val labels = call["labels"]?.spoken.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    val values = call["values"]?.spoken.orEmpty().split(',').mapNotNull { it.trim().toDoubleOrNull() }
+    if (values.isEmpty()) return RouterResult.Failed("I couldn't draw that.")
+
+    return RouterResult.Visual(
+        title = title,
+        chart = ChartSpec(kind = kind, series = listOf(ChartSeries(title, values)), labels = labels),
+        narration = call["narration"]?.spoken?.trim().orEmpty().ifEmpty { title },
     )
 }
 
