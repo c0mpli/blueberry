@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Opaque on purpose. A translucent home window costs an extra composition layer and can leave
+      the previous app visible behind the launcher. Wallpaper is not requested (no
+      windowShowWallpaper), which is why the background must actually paint something.
+    -->
+    <style name="Theme.Blueberry" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/blueberry_bg</item>
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

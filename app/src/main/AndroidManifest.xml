@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Normal-level, auto-granted. Only takes effect once Blueberry actually holds ROLE_HOME;
+         without it, private-space apps are filtered out of the drawer. -->
+    <uses-permission android:name="android.permission.ACCESS_HIDDEN_PROFILES" />
+
+    <!--
+      Required, and easy to get wrong. LauncherApps.getActivityList does NOT bypass Android 11+
+      package visibility: LauncherAppsService passes the caller's uid straight through to
+      PackageManagerInternal.queryIntentActivities, so without this the app drawer comes back
+      nearly empty and nothing throws. A <queries> intent filter is the right tool here rather than
+      QUERY_ALL_PACKAGES, which is a restricted permission.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Blueberry">
+
+        <!--
+          Attributes follow AOSP Launcher3's own activity declaration.
+          Notably absent: android:excludeFromRecents. Home tasks are unconditionally hidden from
+          Recents by RecentTasks.isVisibleRecentTask, so the flag is pure noise.
+          taskAffinity="" keeps other activities from reparenting into the home task.
+          configChanges keeps rotation and keyboard attach from tearing down the home screen.
+        -->
+        <activity
+            android:name=".ui.HomeActivity"
+            android:clearTaskOnLaunch="true"
+            android:configChanges="keyboard|keyboardHidden|mcc|mnc|navigation|orientation|screenSize|screenLayout|smallestScreenSize|density|fontScale|uiMode"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:resizeableActivity="true"
+            android:resumeWhilePausing="true"
+            android:screenOrientation="unspecified"
+            android:stateNotNeeded="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Blueberry"
+            android:windowSoftInputMode="adjustPan">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <!--
+                  AOSP Launcher3 omits CATEGORY_LAUNCHER, so it never appears in its own drawer.
+                  Blueberry keeps it: this is a sideloaded app that has to be openable before it is
+                  the default launcher, otherwise there is no way to reach settings. The drawer
+                  filters its own package out instead.
+                -->
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

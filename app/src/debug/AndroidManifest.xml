@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          Debug only. Exported so adb can reach it; targeted explicitly by component in the verify
+          script because implicit manifest broadcasts have been blocked since Android 8.
+        -->
+        <receiver
+            android:name="com.blueberry.debug.TranscriptInjectReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.blueberry.INJECT_TRANSCRIPT" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
