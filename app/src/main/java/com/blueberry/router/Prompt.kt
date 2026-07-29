@@ -13,11 +13,32 @@ package com.blueberry.router
  */
 object Prompt {
 
-    // Gemma-family turn markers. `parse_special = true` at tokenisation turns these into the real
-    // control tokens rather than literal text.
-    private const val TURN_USER = "<start_of_turn>user\n"
-    private const val TURN_END = "<end_of_turn>\n"
-    private const val TURN_MODEL = "<start_of_turn>model\n"
+    /** The design budgets around sixty apps for roughly a thousand tokens. */
+    const val MAX_CATALOGUE_IN_PROMPT = 60
+
+
+    /**
+     * Chat template markers. `parse_special = true` at tokenisation turns these into real control
+     * tokens rather than literal text — get the family wrong and they stay as visible text in the
+     * prompt, which quietly wrecks instruction following.
+     */
+    enum class Template(val user: String, val end: String, val model: String) {
+        /** Qwen / ChatML. Also `/no_think` to suppress Qwen3's reasoning block, which would
+         *  otherwise burn hundreds of tokens before the answer starts. */
+        CHATML("<|im_start|>user\n", "<|im_end|>\n", "<|im_start|>assistant\n"),
+
+        GEMMA("<start_of_turn>user\n", "<end_of_turn>\n", "<start_of_turn>model\n"),
+    }
+
+    @Volatile
+    var template: Template = Template.CHATML
+
+    /** Qwen3 reasons by default; `/no_think` turns that off. Nothing else in the family needs it. */
+    private val noThink: String get() = if (template == Template.CHATML) " /no_think" else ""
+
+    private val TURN_USER get() = template.user
+    private val TURN_END get() = template.end
+    private val TURN_MODEL get() = template.model
 
     /**
      * The fixed prefix: who the model is, what tools exist, what is installed, what the user has
@@ -41,9 +62,12 @@ object Prompt {
         }
 
         append("\nINSTALLED APPS\n")
-        // Labels only. Package names would double the token count and the model never needs them —
-        // the app slot is resolved against the catalogue on the Kotlin side.
-        append(ctx.catalogue.apps.joinToString(", ") { it.label })
+        // Labels only, and capped. Package names would double the token count and the model never
+        // needs them — the app slot is resolved against the full catalogue on the Kotlin side, so
+        // this list only has to help the model pick *which* app for a fuzzy request. On a phone with
+        // 207 apps the uncapped list alone was over 600 tokens of prefix.
+        append(ctx.catalogue.apps.take(MAX_CATALOGUE_IN_PROMPT).joinToString(", ") { it.label })
+        if (ctx.catalogue.size > MAX_CATALOGUE_IN_PROMPT) append(", and others")
         append('\n')
 
         val defaults = describeDefaults(ctx.defaults)
@@ -63,14 +87,14 @@ object Prompt {
             "chat = just answer or explain in words.\n" +
             "Most requests are chat. Only pick a tool category when the user actually asked for " +
             "something to happen.\n" +
-            "Request: " + transcript.trim() + "\n" +
+            "Request: " + transcript.trim() + noThink + "\n" +
             TURN_END + TURN_MODEL
 
     /** Stage two. Only the category's own tools are offered, and the grammar enforces the shape. */
     fun callSuffix(transcript: String, tools: List<ToolSpec>): String =
         "Choose one tool and fill its arguments. Reply with JSON only.\n" +
             tools.joinToString("\n") { "- ${it.name}(${it.args.joinToString(", ") { a -> a.name }})" } +
-            "\nRequest: " + transcript.trim() + "\n" +
+            "\nRequest: " + transcript.trim() + noThink + "\n" +
             TURN_END + TURN_MODEL
 
     /** The explain path. Shallower than a frontier model, and knowingly so. */

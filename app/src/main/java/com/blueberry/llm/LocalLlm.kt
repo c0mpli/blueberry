@@ -45,8 +45,10 @@ import java.util.concurrent.Executors
  */
 class LocalLlm(
     private val modelFile: File,
-    private val contextTokens: Int = 4096,
     private val stateDir: File,
+    private val contextTokens: Int = 2048,
+    /** Chat markers differ by model family; the wrong ones survive as literal prompt text. */
+    private val template: Prompt.Template = Prompt.Template.CHATML,
     private val threads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 4),
 ) : Llm {
 
@@ -95,6 +97,7 @@ class LocalLlm(
             return false
         }
 
+        Prompt.template = template
         LlamaBridge.nativeInit()
         model = LlamaBridge.nativeLoadModel(modelFile.absolutePath)
         if (model == 0L) {
@@ -131,16 +134,26 @@ class LocalLlm(
             if (!loadBlocking()) return@withContext LlmOutcome.Unavailable
 
             try {
+                val turnStart = SystemClock.elapsedRealtime()
+                Log.i(TAG, "route start: \"$transcript\"")
                 val prefix = Prompt.systemPrefix(ctx)
                 ensurePrefix(prefix)
+                Log.i(TAG, "prefix ready in ${SystemClock.elapsedRealtime() - turnStart}ms")
 
                 val category = classify(transcript)
-                if (category == ToolCategory.CHAT) {
-                    return@withContext LlmOutcome.Speak(explain(transcript))
-                }
+                Log.i(TAG, "category=$category for \"$transcript\"")
 
                 val tools = ToolSpecs.inCategory(category)
-                if (tools.isEmpty()) return@withContext LlmOutcome.Speak(explain(transcript))
+                if (category == ToolCategory.CHAT || tools.isEmpty()) {
+                    val text = explain(transcript)
+                    // An empty generation rendered as an empty card, which looks exactly like a
+                    // hang. Say something rather than nothing.
+                    return@withContext if (text.isBlank()) {
+                        LlmOutcome.Error("I didn't get an answer for that one.")
+                    } else {
+                        LlmOutcome.Speak(text)
+                    }
+                }
 
                 val json = generate(
                     suffix = Prompt.callSuffix(transcript, tools),
@@ -188,6 +201,7 @@ class LocalLlm(
         val stateFile = File(stateDir.apply { mkdirs() }, "kv-$hash.bin")
 
         if (stateFile.exists()) {
+            Log.i(TAG, "restoring saved KV state (${stateFile.length() / 1024}KB)...")
             val restored = LlamaBridge.nativeLoadState(lctx, stateFile.absolutePath)
             if (restored != null && restored.isNotEmpty()) {
                 prefixTokens = restored.size
@@ -203,6 +217,7 @@ class LocalLlm(
         val tokens = LlamaBridge.nativeTokenize(model, prefix, /* addSpecial = */ true, /* parseSpecial = */ true)
             ?: error("could not tokenize the system prefix")
 
+        Log.i(TAG, "prefilling ${tokens.size} prefix tokens...")
         val t0 = SystemClock.elapsedRealtime()
         val rc = LlamaBridge.nativeDecode(lctx, tokens)
         check(rc == 0) { "prefill failed ($rc)" }
@@ -242,7 +257,9 @@ class LocalLlm(
         if (LlamaBridge.nativeDecode(lctx, tokens) != 0) return ""
         val prefillMs = SystemClock.elapsedRealtime() - t0
 
+        val ts = SystemClock.elapsedRealtime()
         val sampler = LlamaBridge.nativeNewSampler(model, grammar, "root", TEMP, TOP_K, TOP_P, SEED)
+        Log.i(TAG, "sampler built in ${SystemClock.elapsedRealtime() - ts}ms (grammar ${grammar.length} chars)")
         if (sampler == 0L) {
             Log.e(TAG, "sampler could not be built; refusing to decode unconstrained")
             return ""
@@ -257,7 +274,9 @@ class LocalLlm(
                     Log.w(TAG, "generation hit its ${budgetMs}ms budget after $produced tokens")
                     break
                 }
+                val tSample = SystemClock.elapsedRealtime()
                 val token = LlamaBridge.nativeSample(lctx, sampler)
+                if (i < 3) Log.i(TAG, "  sample[$i] ${SystemClock.elapsedRealtime() - tSample}ms -> $token")
                 // `repeat` only skipped one iteration here — it did not stop generation, so an
                 // end-of-turn token was ignored and decoding ran to the cap every single time.
                 if (token < 0 || LlamaBridge.nativeIsEog(model, token)) break
@@ -265,7 +284,10 @@ class LocalLlm(
                 out.append(LlamaBridge.nativeTokenToPiece(model, token))
                 if (stream && (i % STREAM_EVERY == 0)) onPartialAnswer?.invoke(out.toString())
                 produced++
-                if (LlamaBridge.nativeDecode(lctx, intArrayOf(token)) != 0) break
+                val tDec = SystemClock.elapsedRealtime()
+                val drc = LlamaBridge.nativeDecode(lctx, intArrayOf(token))
+                if (i < 3) Log.i(TAG, "  decode[$i] ${SystemClock.elapsedRealtime() - tDec}ms")
+                if (drc != 0) break
             }
             val decodeMs = SystemClock.elapsedRealtime() - decodeStart
             Log.i(TAG, "prefill ${prefillMs}ms (${tokens.size} tok), decode ${decodeMs}ms ($produced tok)")

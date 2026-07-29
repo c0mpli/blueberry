@@ -27,8 +27,17 @@ android {
 
         externalNativeBuild {
             cmake {
-                arguments += listOf("-DANDROID_STL=c++_shared")
-                cppFlags += "-O3"
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    // Force the native side to Release even for the debug APK.
+                    //
+                    // AGP passes CMAKE_BUILD_TYPE=Debug for the debug variant, which appends
+                    // `-O0 -g` to every ggml source and overrides any -O3 set here. Unoptimised
+                    // matmul kernels are tens of times slower: a 351-token prefill that should
+                    // take about a second took over 45 seconds of four cores at 100%, which
+                    // reads as a hang rather than as slowness. Debuggable Java, optimised native.
+                    "-DCMAKE_BUILD_TYPE=Release",
+                )
             }
         }
     }

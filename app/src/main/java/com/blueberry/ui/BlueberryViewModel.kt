@@ -111,6 +111,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
             modelFile = file,
             contextTokens = preset.contextTokens,
             stateDir = File(getApplication<Application>().filesDir, "kv"),
+            template = preset.template,
         )
         if (llm.load()) {
             // Show the answer as it is produced. A phone decodes fast enough to read along with,
@@ -326,7 +327,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "Blueberry"
         const val STABILITY_MS = 300L
-        val MODEL_PRESET = ModelRepo.Preset.FUNCTION_GEMMA_270M
+        val MODEL_PRESET = ModelRepo.Preset.QWEN3_0_6B
 
         /** Includes the one-off cold prefill on the first turn after a catalogue change. */
         const val MODEL_TIMEOUT_MS = 20_000L

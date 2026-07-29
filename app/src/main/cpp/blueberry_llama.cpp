@@ -100,11 +100,22 @@ Java_com_blueberry_llm_LlamaBridge_nativeNewContext(JNIEnv *, jobject, jlong hmo
 
     llama_context_params params = llama_context_default_params();
     params.n_ctx         = static_cast<uint32_t>(n_ctx);
-    params.n_batch       = static_cast<uint32_t>(n_ctx);
     params.n_threads     = n_threads;
     params.n_threads_batch = n_threads;
-    // The routing path never needs the embeddings and never re-reads old logits.
     params.embeddings    = false;
+
+    // We only ever sample the last token of a batch, so exactly one set of logits is needed.
+    //
+    // This line is load-bearing. `n_outputs_max` defaults to `n_batch`, and the logits buffer is
+    // n_outputs_max * n_vocab * 4 bytes. With a 2048 batch and Qwen3's 151,936-token vocabulary
+    // that reserves ~1.2 GB *on top of* the weights — enough to push an 8 GB phone into swap, at
+    // which point the prefill appears to hang rather than fail.
+    params.n_outputs_max = 1;
+
+    // A prompt longer than n_batch is split automatically, so a modest batch costs a little
+    // prefill throughput and saves a lot of compute buffer.
+    params.n_batch       = 512;
+    params.n_ubatch      = 512;
 
     llama_context *ctx = llama_init_from_model(model, params);
     if (ctx == nullptr) {

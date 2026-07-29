@@ -39,13 +39,29 @@ class ModelRepo(private val context: Context) {
         val file: String,
         val approxBytes: Long,
         val contextTokens: Int,
+        val template: com.blueberry.router.Prompt.Template,
     ) {
+        /**
+         * The default. Q4_0 rather than Q4_K_M on purpose: KleidiAI only ships kernels for Q4_0 and
+         * Q8_0, so a K-quant silently falls back to the generic path on exactly the hardware this
+         * runs on. Small enough that the weights plus KV cache do not push an 8 GB phone into swap,
+         * which is what killed the 1.7B.
+         */
+        QWEN3_0_6B(
+            label = "Qwen3 0.6B (Q4_0)",
+            repo = "ggml-org/Qwen3-0.6B-GGUF",
+            file = "Qwen3-0.6B-Q4_0.gguf",
+            approxBytes = 429_000_000L,
+            contextTokens = 2048,
+            template = com.blueberry.router.Prompt.Template.CHATML,
+        ),
         FUNCTION_GEMMA_270M(
             label = "FunctionGemma 270M (Q4_K_M)",
             repo = "unsloth/functiongemma-270m-it-GGUF",
             file = "functiongemma-270m-it-Q4_K_M.gguf",
             approxBytes = 253_000_000L,
             contextTokens = 2048,
+            template = com.blueberry.router.Prompt.Template.GEMMA,
         ),
         QWEN3_1_7B(
             label = "Qwen3 1.7B (Q4_K_M)",
@@ -53,6 +69,7 @@ class ModelRepo(private val context: Context) {
             file = "Qwen3-1.7B-Q4_K_M.gguf",
             approxBytes = 1_282_000_000L,
             contextTokens = 2048,
+            template = com.blueberry.router.Prompt.Template.CHATML,
         );
 
         val url: String get() = "https://huggingface.co/$repo/resolve/main/$file?download=true"
