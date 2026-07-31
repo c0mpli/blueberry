@@ -41,7 +41,11 @@ sealed interface AsrEvent {
 
     data class Final(val text: String) : AsrEvent
 
-    /** Input level, for the amplitude-reactive indicator. */
+    /**
+     * Input level, already normalised to 0..1 by whichever source produced it — MicPipe computes
+     * it from the PCM it owns, the recogniser path converts its dB before emitting. Consumers must
+     * not normalise again.
+     */
     data class Level(val rms: Float) : AsrEvent
 
     data class Failed(val reason: String, val code: Int = -1) : AsrEvent

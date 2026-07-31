@@ -37,6 +37,17 @@ class PlatformSpeechSource(
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
 
+    /** Fallback for API 29-32, where a caller-supplied audio source does not exist. */
+    private val beeps = BeepSuppressor(context)
+
+    /**
+     * API 33+: we own the microphone and hand the recogniser a pipe. That removes the start/end
+     * tones outright rather than muting them, and gives us the raw PCM for the level meter.
+     */
+    private var mic: MicPipe? = null
+
+    private val ownsMic: Boolean get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
     /** True when the recogniser in use runs entirely on the device. */
     var onDevice: Boolean = false
         private set
@@ -54,16 +65,42 @@ class PlatformSpeechSource(
         }
         if (listening) return
         listening = true
-        r.startListening(recognizerIntent())
+
+        if (ownsMic) {
+            val pipe = MicPipe()
+            // Our own PCM drives the indicator; onRmsChanged is not delivered for a supplied source.
+            if (pipe.start { emit(AsrEvent.Level(it)) }) {
+                mic = pipe
+                r.startListening(recognizerIntent(pipe))
+                return
+            }
+            Log.w(TAG, "could not open the microphone; falling back to the recogniser's own")
+            pipe.stop()
+        }
+
+        // Pre-33 path: the recogniser opens the mic, so the tones can only be muted around it.
+        beeps.mute()
+        r.startListening(recognizerIntent(null))
     }
 
     override fun stop() {
         if (!listening) return
         listening = false
+        // Closing the write end of the pipe is how a supplied-source session is ended.
+        mic?.stop()
+        mic = null
         recognizer?.stopListening()
+        // Deliberately no beeps.restore() here: stopListening triggers the *end* tone, so
+        // unmuting before it fires defeats the whole point. onResults and onError both always
+        // follow, and both restore.
     }
 
     override fun release() {
+        // Unconditionally, so a crash or an early teardown can never leave the phone's streams
+        // muted or the microphone held open.
+        beeps.restore()
+        mic?.stop()
+        mic = null
         listening = false
         recognizer?.destroy()
         recognizer = null
@@ -85,7 +122,7 @@ class PlatformSpeechSource(
         null
     }
 
-    private fun recognizerIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+    private fun recognizerIntent(pipe: MicPipe?) = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         // en-IN handles Hindi/English code-mixing far better than en-US, and effectively all input
         // here is code-mixed.
@@ -97,6 +134,17 @@ class PlatformSpeechSource(
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+
+        if (pipe != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Note the constant name: SAMPLING_RATE, not SAMPLE_RATE.
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, pipe.readSide)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, MicPipe.ENCODING)
+            putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, MicPipe.SAMPLE_RATE)
+            // EXTRA_SEGMENTED_SESSION is deliberately absent: it would switch this to a continuous
+            // session ending only when the pipe closes, with segment callbacks. One utterance per
+            // tap is what the surface wants.
+        }
     }
 
     private val listener = object : RecognitionListener {
@@ -104,19 +152,33 @@ class PlatformSpeechSource(
 
         override fun onBeginningOfSpeech() = Unit
 
-        override fun onRmsChanged(rmsdB: Float) = emit(AsrEvent.Level(rmsdB))
+        // Only fires when the recogniser owns the mic. On API 33+ MicPipe emits Level itself,
+        // already normalised, so this is ignored to avoid two sources fighting over the meter.
+        override fun onRmsChanged(rmsdB: Float) {
+            if (!ownsMic) emit(AsrEvent.Level(normaliseRecogniserRms(rmsdB)))
+        }
+
+        private fun normaliseRecogniserRms(db: Float): Float = ((db + 2f) / 12f).coerceIn(0f, 1f)
 
         override fun onBufferReceived(buffer: ByteArray?) = Unit
 
+        // The end tone plays around here, so the mute has to outlast it — restored in onResults
+        // and onError, both of which always follow.
         override fun onEndOfSpeech() = Unit
 
         override fun onError(error: Int) {
             listening = false
+            mic?.stop()
+            mic = null
+            beeps.restore()
             emit(AsrEvent.Failed(describe(error), error))
         }
 
         override fun onResults(results: Bundle?) {
             listening = false
+            mic?.stop()
+            mic = null
+            beeps.restore()
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
             if (text.isNullOrBlank()) emit(AsrEvent.Stopped) else emit(AsrEvent.Final(text))
         }

@@ -131,7 +131,7 @@ internal fun visualStateOf(state: UiState): VoiceVisualState = when (state) {
 }
 
 internal fun levelOf(state: UiState): Float =
-    (state as? UiState.Listening)?.let { normaliseRms(it.level) } ?: 0f
+    (state as? UiState.Listening)?.level?.coerceIn(0f, 1f) ?: 0f
 
 @Composable
 private fun VoiceStage(state: UiState) {

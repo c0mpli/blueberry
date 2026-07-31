@@ -421,10 +421,10 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
          * actually measured on a clean device.
          *
          * It was briefly blamed for an LLM prefill regression (1380ms -> ~15000ms for the same 47
-         * tokens). That was wrong: the regression persisted with Kokoro gated off, with its files
-         * deleted from the device, and with the CPU governor ramped to 1.78GHz — so it is a
-         * property of the handset's state after prolonged testing (swap pressure), not of loading
-         * a second model. Re-measure from a fresh boot before drawing any conclusion.
+         * tokens). That was wrong on four counts: the regression persisted with Kokoro gated off,
+         * with its files deleted from the device, with the CPU governor forced to 1.78GHz, and it
+         * then disappeared on its own with no code change at all (back to 1091ms) once the handset
+         * was no longer under sustained load. It was device state, not a second model.
          */
         const val USE_KOKORO = false
 
