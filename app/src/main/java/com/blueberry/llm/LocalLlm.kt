@@ -86,6 +86,19 @@ class LocalLlm(
 
     suspend fun load(): Boolean = withContext(dispatcher) { loadBlocking() }
 
+    /**
+     * Prefill and cache the system prefix before the user has asked for anything.
+     *
+     * The cold prefill measured 8427ms for 476 tokens on a Galaxy S23, against 121ms to restore it
+     * from disk. Doing that work at startup rather than on the first request is the single largest
+     * latency win left in the model path, and it costs nothing the app was not going to spend.
+     */
+    suspend fun warmPrefix(ctx: RouteContext) = withContext(dispatcher) {
+        if (!loadBlocking()) return@withContext
+        runCatching { ensurePrefix(Prompt.systemPrefix(ctx)) }
+            .onFailure { Log.w(TAG, "prefix warm-up failed", it) }
+    }
+
     private fun loadBlocking(): Boolean {
         if (ready) return true
         if (!LlamaBridge.available) {

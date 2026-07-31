@@ -19,6 +19,7 @@ import com.blueberry.llm.ModelRepo
 import com.blueberry.llm.SwappableLlm
 import com.blueberry.tools.IntentFactory
 import com.blueberry.voice.AsrEvent
+import com.blueberry.voice.Speaker
 import com.blueberry.voice.TranscriptSourceFactory
 import com.blueberry.voice.TranscriptSource
 import android.net.ConnectivityManager
@@ -61,6 +62,12 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val transcripts: TranscriptSource = TranscriptSourceFactory.create(app)
 
+    /**
+     * Built at startup, not per utterance: constructing a TextToSpeech binds to a remote service and
+     * costs several hundred milliseconds.
+     */
+    private val speaker = Speaker(app).also { it.warmUp() }
+
     private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
@@ -75,6 +82,12 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     private var lastPartial: String = ""
     private var catalogueCallback: android.content.pm.LauncherApps.Callback? = null
     private var local: LocalLlm? = null
+
+    /** True while this turn is allowed to make noise. Decided once, at the start of the turn. */
+    private var speaking = false
+
+    /** Set when the partial gate started routing speculatively, so the final does not redo it. */
+    private var speculated: String? = null
 
     init {
         viewModelScope.launch { refreshCatalogue() }
@@ -119,11 +132,15 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
             llm.onPartialAnswer = { partial ->
                 if (partial.isNotBlank()) {
                     _uiState.value = UiState.Done(RouterResult.Answer(partial), fired = false)
+                    // Speak each sentence the moment it completes rather than waiting for the last
+                    // token — first audio lands a sentence after the first token, not an answer later.
+                    if (speaking) speaker.speakStreaming(partial)
                 }
             }
             llmSlot.delegate = llm
             local = llm
             Log.i(TAG, "on-device model ready")
+            llm.warmPrefix(context())
         } else {
             Log.w(TAG, "model failed to load: ${llm.lastError}")
         }
@@ -166,12 +183,17 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     fun onPressComplete() {
         session = Session()
         lastPartial = ""
+        speculated = null
+        // Barge-in: a new turn silences the old answer immediately, before the mic even opens.
+        speaker.stop()
+        speaking = speaker.shouldSpeak()
         _uiState.value = UiState.Listening("", 0f)
         transcripts.start()
     }
 
     fun onDismiss() {
         stabilityJob?.cancel()
+        speaker.stop()
         transcripts.stop()
         session.reset()
         _uiState.value = UiState.Idle
@@ -246,9 +268,11 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
 
             PartialDecision.Wait -> armStabilityTimer(text, ctx)
 
-            // Nothing seeded can match. This is where speculative model routing would start; with
-            // no model wired yet it simply waits for the final transcript.
-            PartialDecision.Miss -> stabilityJob?.cancel()
+            // Nothing seeded can match, so this turn belongs to the model. Rather than wait out
+            // the recogniser's ~1s silence timeout, start inference as soon as the partial stops
+            // changing. On-device there is no quota to burn and no request to waste — a discarded
+            // decode costs a few hundred milliseconds of CPU and nothing else.
+            PartialDecision.Miss -> armSpeculativeRoute(text, ctx)
         }
     }
 
@@ -270,20 +294,44 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Route on a settled partial, before the recogniser has decided the user stopped talking.
+     * [speculated] records what was routed so the final transcript does not run the same turn twice.
+     */
+    private fun armSpeculativeRoute(text: String, ctx: RouteContext) {
+        stabilityJob?.cancel()
+        stabilityJob = viewModelScope.launch {
+            delay(SPECULATE_AFTER_MS)
+            if (lastPartial != text || speculated == text) return@launch
+            speculated = text
+            runTurn(text, ctx)
+        }
+    }
+
     private fun onFinal(text: String) {
         stabilityJob?.cancel()
         // The partial gate may already have fired this turn.
         if (_uiState.value is UiState.Done) return
+        // Speculative routing already started this exact utterance; let it finish.
+        if (speculated == text) return
+        viewModelScope.launch { runTurn(text, context()) }
+    }
+
+    private suspend fun runTurn(text: String, ctx: RouteContext) {
+        speaking = speaker.shouldSpeak()
+        Log.i(TAG, "turn \"$text\" speaking=$speaking")
         _uiState.value = UiState.Thinking(text)
-        viewModelScope.launch {
-            val ctx = context()
+        run {
             val result = withTimeoutOrNull(MODEL_TIMEOUT_MS) { router.route(text, ctx, session) }
                 ?: RouterResult.Failed("That took too long — try again, or use the app drawer.")
             session.record(Session.Turn(text, result))
             // A streamed answer has already been shown token by token; replacing it with the same
             // text would flicker the card.
             if (result is RouterResult.Answer && _uiState.value.let { it is UiState.Done && it.result is RouterResult.Answer }) {
+                // Already streamed to the card; just settle on the final text and speak whatever
+                // sentence fragment came after the last boundary.
                 _uiState.value = UiState.Done(result, fired = false)
+                speakIfAppropriate(result)
             } else {
                 complete(text, result, ctx)
             }
@@ -301,6 +349,22 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         complete(transcript, result, ctx)
     }
 
+    /**
+     * What gets spoken, and what does not. Restraint is the difference between a conversation and an
+     * assistant that narrates: a clarification has to be heard, an answer is worth hearing, and
+     * "opening Spotify" is just noise in front of the thing you asked for.
+     */
+    private fun speakIfAppropriate(result: RouterResult) {
+        if (!speaking) return
+        when (result) {
+            is RouterResult.Clarify -> speaker.say(result.question)
+            is RouterResult.Answer -> speaker.finish(result.text)
+            is RouterResult.Visual -> speaker.say(result.narration)
+            // Action, Saved and Failed are all faster to see than to hear.
+            else -> Unit
+        }
+    }
+
     private fun complete(transcript: String, result: RouterResult, ctx: RouteContext) {
         var fired = false
         if (result is RouterResult.Action) {
@@ -315,11 +379,13 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         _uiState.value = UiState.Done(result, fired)
+        speakIfAppropriate(result)
     }
 
     override fun onCleared() {
         catalogueCallback?.let { appCatalogue.stopObserving(it) }
         local?.close()
+        speaker.release()
         transcripts.release()
         super.onCleared()
     }
@@ -327,6 +393,12 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         private const val TAG = "Blueberry"
         const val STABILITY_MS = 300L
+
+        /**
+         * How long a non-matching partial must hold still before the model is started on it.
+         * Shorter than the platform's ~1s endpointing, which is the whole point.
+         */
+        const val SPECULATE_AFTER_MS = 350L
         val MODEL_PRESET = ModelRepo.Preset.QWEN3_0_6B
 
         /** Includes the one-off cold prefill on the first turn after a catalogue change. */
