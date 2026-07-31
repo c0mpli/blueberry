@@ -160,15 +160,30 @@ class LocalLlm(
                     grammar = Gbnf.toolCall(tools),
                     maxTokens = MAX_CALL_TOKENS,
                 )
-                parseCall(json)?.let { LlmOutcome.Call(it) }
-                    ?: LlmOutcome.Error("I couldn't work out what to do with that.")
+                val call = parseCall(json)
+                if (call != null) {
+                    LlmOutcome.Call(call)
+                } else {
+                    // A misclassification or a truncated decode must not dead-end in an error the
+                    // user cannot act on. Answering in words is always a reasonable fallback.
+                    Log.w(TAG, "tool call failed for category $category; answering instead")
+                    val text = explain(transcript)
+                    if (text.isBlank()) LlmOutcome.Error("I didn't get an answer for that one.")
+                    else LlmOutcome.Speak(text)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "routing failed", e)
                 LlmOutcome.Error("Something went wrong on the way to the model.")
             }
         }
 
+    /** Words that actually mean "draw this". Cheaper and far more reliable than asking the model. */
+    private val CHART_WORDS = listOf("chart", "graph", "plot", "diagram", "draw ")
+
     private fun classify(transcript: String): ToolCategory {
+        val lower = transcript.lowercase()
+        if (CHART_WORDS.any { it in lower }) return ToolCategory.VISUAL
+
         val word = generate(
             suffix = Prompt.categorySuffix(transcript),
             grammar = Gbnf.category(),
@@ -280,7 +295,11 @@ class LocalLlm(
                 // `repeat` only skipped one iteration here — it did not stop generation, so an
                 // end-of-turn token was ignored and decoding ran to the cap every single time.
                 if (token < 0 || LlamaBridge.nativeIsEog(model, token)) break
-                LlamaBridge.nativeAccept(sampler, token)
+                // Do NOT accept the token here. llama_sampler_sample() already calls
+                // llama_sampler_accept() internally, so doing it again advances the grammar twice
+                // per token. The stacks empty out and llama_grammar_reject_candidates trips
+                // GGML_ASSERT(!stacks.empty()), which aborts the whole process — it presents as the
+                // app vanishing mid-answer rather than as an error.
                 out.append(LlamaBridge.nativeTokenToPiece(model, token))
                 if (stream && (i % STREAM_EVERY == 0)) onPartialAnswer?.invoke(out.toString())
                 produced++
@@ -349,7 +368,8 @@ class LocalLlm(
         // Routing is classification, not creative writing. Greedy is both the most accurate and
         // the fastest, and it makes the turn log reproducible.
         const val TEMP = 0.0f
-        const val TOP_K = 0
+        /** Gates the grammar sampler; see the note in blueberry_llama.cpp. */
+        const val TOP_K = 40
         const val TOP_P = 1.0f
         const val SEED = 0
 

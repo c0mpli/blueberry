@@ -25,6 +25,12 @@ enum class ArgType { STRING, INT }
  * that first, one-token decision.
  */
 enum class ToolCategory {
+    /**
+     * No tool — just converse. Listed first deliberately: it is the common case, and a small
+     * classifier leans on the first alternative when it is unsure.
+     */
+    CHAT,
+
     /** Fires an intent at another app. Terminal. */
     ACTION,
 
@@ -36,9 +42,6 @@ enum class ToolCategory {
 
     /** Draws an answer instead of only speaking it. */
     VISUAL,
-
-    /** No tool — just converse. This is the default, and most turns should land here. */
-    CHAT,
 }
 
 object ToolSpecs {

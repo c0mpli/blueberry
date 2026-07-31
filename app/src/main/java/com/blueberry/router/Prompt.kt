@@ -25,7 +25,15 @@ object Prompt {
     enum class Template(val user: String, val end: String, val model: String) {
         /** Qwen / ChatML. Also `/no_think` to suppress Qwen3's reasoning block, which would
          *  otherwise burn hundreds of tokens before the answer starts. */
-        CHATML("<|im_start|>user\n", "<|im_end|>\n", "<|im_start|>assistant\n"),
+        CHATML(
+            "<|im_start|>user\n",
+            "<|im_end|>\n",
+            // The pre-closed think block is deliberate. Qwen3 reasons by default, and "/no_think"
+            // is only a hint it can ignore — when it does emit <think>, the grammar has no
+            // production for it and llama.cpp aborts the whole process on the empty stack.
+            // Opening the assistant turn with the block already closed removes the possibility.
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+        ),
 
         GEMMA("<start_of_turn>user\n", "<end_of_turn>\n", "<start_of_turn>model\n"),
     }
@@ -70,6 +78,24 @@ object Prompt {
         if (ctx.catalogue.size > MAX_CATALOGUE_IN_PROMPT) append(", and others")
         append('\n')
 
+        append("\nHOW TO CLASSIFY A REQUEST\n")
+        append(
+            "open spotify -> action\n" +
+                "play sapphire -> action\n" +
+                "navigate to the airport -> action\n" +
+                "note down buy milk -> capture\n" +
+                "remind me to call vivek -> capture\n" +
+                "hello -> chat\n" +
+                "can you hear me -> chat\n" +
+                "how are you -> chat\n" +
+                "what is a transformer -> chat\n" +
+                "explain how attention works -> chat\n" +
+                "chart my spending by month -> visual\n" +
+                "draw me a bar chart of x -> visual\n" +
+                "Anything that is a greeting, a question, or a request for an explanation is chat. " +
+                "Only use visual when the user explicitly asks for a chart, graph or diagram.\n"
+        )
+
         val defaults = describeDefaults(ctx.defaults)
         if (defaults.isNotEmpty()) {
             // Every default listed here is a clarification round trip that never happens.
@@ -82,10 +108,7 @@ object Prompt {
     /** Stage one. One word, decoded under a closed grammar. */
     fun categorySuffix(transcript: String): String =
         "Classify this request into one category.\n" +
-            "action = do something in an app. capture = write something down. " +
-            "query = read the user's own data. visual = the answer is better drawn than said. " +
-            "chat = just answer or explain in words.\n" +
-            "Most requests are chat. Only pick a tool category when the user actually asked for " +
+            "Follow the examples above. Default to chat unless the user clearly asked for " +
             "something to happen.\n" +
             "Request: " + transcript.trim() + noThink + "\n" +
             TURN_END + TURN_MODEL

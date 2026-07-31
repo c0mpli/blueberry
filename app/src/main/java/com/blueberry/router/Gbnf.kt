@@ -20,9 +20,19 @@ package com.blueberry.router
  */
 object Gbnf {
 
-    /** Stage one: pick a category. */
+    /**
+     * Stage one: pick a category.
+     *
+     * [ToolCategory.VISUAL] is deliberately not offered. Whether an answer is better drawn than
+     * spoken is a judgement a 0.6B model gets wrong constantly — it classified "hello" as visual
+     * and tried to render a bar chart of it. That decision is made in Kotlin from an explicit
+     * keyword instead, where it is deterministic and costs nothing.
+     */
     fun category(): String =
-        "root ::= " + ToolCategory.entries.joinToString(" | ") { lit(it.name.lowercase()) } + "\n"
+        "root ::= " + CLASSIFIABLE.joinToString(" | ") { lit(it.name.lowercase()) } + "\n"
+
+    val CLASSIFIABLE: List<ToolCategory> =
+        ToolCategory.entries.filter { it != ToolCategory.VISUAL }
 
     /** Stage two: call exactly one of [tools], with exactly its own arguments. */
     fun toolCall(tools: List<ToolSpec>): String {

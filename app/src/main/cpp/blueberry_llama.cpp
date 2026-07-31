@@ -237,6 +237,11 @@ Java_com_blueberry_llm_LlamaBridge_nativeNewSampler(JNIEnv *env, jobject, jlong 
 
     llama_sampler *chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
 
+    // The grammar MUST see the full candidate set. Truncating first (top_k, top_p) can remove every
+    // grammar-valid token, after which the grammar masks the survivors to -inf and the selector
+    // returns something the grammar forbids — llama.cpp then throws
+    // "Unexpected empty grammar stack after accepting piece" and aborts the process. Measured on a
+    // Galaxy S23: Qwen3 emitted <think> exactly this way. Grammar first, always.
     if (!grammar.empty()) {
         llama_sampler *g = llama_sampler_init_grammar(vocab, grammar.c_str(), root.c_str());
         if (g == nullptr) {

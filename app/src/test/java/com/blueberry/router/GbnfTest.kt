@@ -13,20 +13,33 @@ import org.junit.Test
 class GbnfTest {
 
     @Test
-    fun `category grammar offers exactly the categories`() {
-        // Derived from the enum rather than hardcoded, so adding a category cannot leave the
-        // grammar and the classifier disagreeing about what words are legal.
-        val expected = ToolCategory.entries.joinToString(" | ") { "\"${it.name.lowercase()}\"" }
+    fun `category grammar offers every classifiable category`() {
+        val expected = Gbnf.CLASSIFIABLE.joinToString(" | ") { "\"${it.name.lowercase()}\"" }
         assertEquals("root ::= $expected\n", Gbnf.category())
+    }
+
+    @Test
+    fun `the model is never offered VISUAL`() {
+        // "Is this better drawn than said" is a judgement a 0.6B gets wrong constantly — it
+        // classified "hello" as visual and tried to chart it. LocalLlm decides that from an
+        // explicit keyword instead, so the grammar must not let the model reach for it.
+        assertFalse(Gbnf.CLASSIFIABLE.contains(ToolCategory.VISUAL))
+        assertFalse(Gbnf.category().contains("visual"))
     }
 
     @Test
     fun `every category the grammar can emit is one the router understands`() {
         val emitted = Regex("\"([a-z]+)\"").findAll(Gbnf.category()).map { it.groupValues[1] }.toList()
-        assertEquals(ToolCategory.entries.size, emitted.size)
+        assertEquals(Gbnf.CLASSIFIABLE.size, emitted.size)
         for (word in emitted) {
             assertTrue("$word is not a ToolCategory", ToolCategory.entries.any { it.name.lowercase() == word })
         }
+    }
+
+    @Test
+    fun `chat is the first alternative the classifier sees`() {
+        // A small model leans on the first alternative when unsure, and chat is the safe default.
+        assertTrue(Gbnf.category().startsWith("root ::= \"chat\""))
     }
 
     @Test
