@@ -22,6 +22,7 @@ import com.blueberry.voice.AsrEvent
 import com.blueberry.voice.KokoroSpeaker
 import com.blueberry.voice.Speaker
 import com.blueberry.voice.SpeechPolicy
+import com.blueberry.voice.SupertonicSpeaker
 import com.blueberry.voice.TtsEngine
 import com.blueberry.voice.VoiceAudition
 import com.blueberry.voice.TranscriptSourceFactory
@@ -75,11 +76,20 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
      * loading Kokoro reads 113 MB of int8 weights — neither belongs on the critical path.
      */
     private val speaker: TtsEngine = run {
-        // Created here so the directory is owned by the app: one made by `adb push` belongs to
+        // Created here so the directories are owned by the app: one made by `adb push` belongs to
         // shell, and the app then cannot read into it.
-        val dir = File(app.getExternalFilesDir(null), "tts/kokoro-int8-multi-lang-v1_0").apply { mkdirs() }
-        val engine: TtsEngine =
-            if (USE_KOKORO && KokoroSpeaker.isInstalled(dir)) KokoroSpeaker(dir) else Speaker(app)
+        val ttsRoot = File(app.getExternalFilesDir(null), "tts").apply { mkdirs() }
+        val kokoroDir = File(ttsRoot, "kokoro-int8-multi-lang-v1_0").apply { mkdirs() }
+        val supertonicDir = File(ttsRoot, "supertonic-3").apply { mkdirs() }
+
+        val engine: TtsEngine = when {
+            ENGINE == TtsChoice.SUPERTONIC && SupertonicSpeaker.isInstalled(supertonicDir) ->
+                SupertonicSpeaker(supertonicDir)
+            ENGINE == TtsChoice.KOKORO && KokoroSpeaker.isInstalled(kokoroDir) ->
+                KokoroSpeaker(kokoroDir)
+            // Always available, needs no download, sounds like a satnav.
+            else -> Speaker(app)
+        }
         Log.i(TAG, "speech engine: ${engine.name}")
         engine.also { it.warmUp() }
     }
@@ -447,7 +457,15 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         val MODEL_PRESET = ModelRepo.Preset.QWEN3_0_6B
 
         /**
-         * Kokoro loads and reports 53 speakers at 24 kHz, but is off by default until its cost is
+         * Which neural voice to use, or PLATFORM for none.
+         *
+         * Kokoro wins on English naturalness by a wide margin in listener comparisons, and af_bella
+         * was picked here by ear. Supertonic is the counterweight: less natural by its own maker's
+         * admission, but built for speed, half the size, and reported to handle language mixing
+         * mid-sentence — which is the Hindi/English case Kokoro has no mechanism for.
+         *
+         * Historical note kept because it cost a lot to establish: Kokoro loads and reports 53
+         * speakers at 24 kHz, but was once suspected of
          * actually measured on a clean device.
          *
          * It was briefly blamed for an LLM prefill regression (1380ms -> ~15000ms for the same 47
@@ -456,7 +474,10 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
          * then disappeared on its own with no code change at all (back to 1091ms) once the handset
          * was no longer under sustained load. It was device state, not a second model.
          */
-        const val USE_KOKORO = true
+        // Kokoro, af_bella. Chosen by listening: Supertonic is about twice as fast and less than
+        // half the size, but its voice was rejected on the phone — which matches both the listener
+        // evidence and its own maker's statement that naturalness was not the objective.
+        val ENGINE = TtsChoice.KOKORO
 
         /** Includes the one-off cold prefill on the first turn after a catalogue change. */
         const val MODEL_TIMEOUT_MS = 20_000L
@@ -478,3 +499,6 @@ sealed interface UiState {
     /** Confirmation card, or answer text, or a tick. */
     data class Done(val result: RouterResult, val fired: Boolean) : UiState
 }
+
+/** Which speech engine to use. Swapped by rebuild for now; belongs in settings later. */
+enum class TtsChoice { PLATFORM, KOKORO, SUPERTONIC }
