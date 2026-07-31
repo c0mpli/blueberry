@@ -50,22 +50,36 @@ interface TtsEngine {
 object SentenceSplitter {
 
     /**
-     * Index just past the last sentence terminator in `text[from..]`, or [from] when there is none.
+     * Index just past the last speakable boundary in `text[from..]`, or [from] when there is none.
      *
-     * A terminator only counts when followed by whitespace or the end of the string, so decimals
-     * and abbreviations do not split a sentence mid-number.
+     * Clauses count, not just sentences. A neural synthesiser on a phone runs close to real time —
+     * Kokoro measured 1.17x — so waiting for a full sentence means waiting out its entire spoken
+     * duration before a single word is heard. Cutting at commas as well gets the first audio out in
+     * a fraction of that, and the pieces still play back-to-back because they are queued in order.
+     *
+     * Sentence terminators only count when followed by whitespace or end-of-string, so decimals and
+     * abbreviations ("3:00 PM.", "1.5") do not split mid-number.
      */
     fun lastBoundary(text: String, from: Int): Int {
         var best = from
         var i = from
         while (i < text.length) {
             val c = text[i]
-            if (c == '.' || c == '!' || c == '?' || c == '\n' || c == '।') {
+            val terminal = c == '.' || c == '!' || c == '?' || c == '\n' || c == '।'
+            val clause = c == ',' || c == ';' || c == ':' || c == '—'
+            if (terminal || clause) {
                 val next = text.getOrNull(i + 1)
-                if (next == null || next.isWhitespace()) best = i + 1
+                if (next == null || next.isWhitespace()) {
+                    // Never emit a scrap. A two-word fragment synthesises with no prosody and
+                    // sounds worse than the wait it saved.
+                    if (i + 1 - from >= MIN_CHUNK) best = i + 1
+                }
             }
             i++
         }
         return best
     }
+
+    /** Characters, not words: below this a chunk is a scrap rather than a clause. */
+    private const val MIN_CHUNK = 12
 }

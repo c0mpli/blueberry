@@ -426,7 +426,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
          * then disappeared on its own with no code change at all (back to 1091ms) once the handset
          * was no longer under sustained load. It was device state, not a second model.
          */
-        const val USE_KOKORO = false
+        const val USE_KOKORO = true
 
         /** Includes the one-off cold prefill on the first turn after a catalogue change. */
         const val MODEL_TIMEOUT_MS = 20_000L
