@@ -100,6 +100,11 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     private val _catalogue = MutableStateFlow(Catalogue.EMPTY)
     val catalogue: StateFlow<Catalogue> = _catalogue.asStateFlow()
 
+    private val _conversation = MutableStateFlow<List<Exchange>>(emptyList())
+
+    /** Recent turns, oldest first. A companion should remember the last thing that was said. */
+    val conversation: StateFlow<List<Exchange>> = _conversation.asStateFlow()
+
     private val _screen = MutableStateFlow(Screen.HOME)
     val screen: StateFlow<Screen> = _screen.asStateFlow()
 
@@ -262,6 +267,8 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     fun onHomeReentered() {
         closeDrawer()
         onDismiss()
+        // Pressing home ends the session, and the design says nothing persists across sessions.
+        _conversation.value = emptyList()
     }
 
     fun icon(packageName: String) = appCatalogue.icon(packageName)
@@ -369,6 +376,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun runTurn(text: String, ctx: RouteContext) {
+        remember(Exchange(fromUser = true, text = text))
         speaking = policy.shouldSpeak()
         Log.i(TAG, "turn \"$text\" speaking=$speaking")
         _uiState.value = UiState.Thinking(text)
@@ -430,7 +438,25 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         _uiState.value = UiState.Done(result, fired)
+        remember(Exchange(fromUser = false, text = describe(result)))
         speakIfAppropriate(result)
+    }
+
+    /** What the companion "said", for the transcript. */
+    private fun describe(result: RouterResult): String = when (result) {
+        is RouterResult.Answer -> result.text
+        is RouterResult.Action -> result.label
+        is RouterResult.Saved -> "Saved — ${result.text}"
+        is RouterResult.Clarify -> result.question
+        is RouterResult.Visual -> result.narration
+        is RouterResult.Failed -> result.reason
+    }
+
+    private fun remember(exchange: Exchange) {
+        if (exchange.text.isBlank()) return
+        // Bounded: this is a companion's short-term memory on screen, not a chat log. Sessions end
+        // and nothing persists across them.
+        _conversation.value = (_conversation.value + exchange).takeLast(MAX_VISIBLE_TURNS)
     }
 
     override fun onCleared() {
@@ -454,6 +480,9 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         /** A spread across Kokoro's English female and male voices, not every one of the 53. */
         val SWEEP_VOICES = listOf(0, 2, 3, 6, 9, 11, 14)
         const val AUDITION_GAP_MS = 4_000L
+
+        /** Enough to feel continuous, few enough to stay glanceable. */
+        const val MAX_VISIBLE_TURNS = 6
         val MODEL_PRESET = ModelRepo.Preset.QWEN3_0_6B
 
         /**
@@ -502,3 +531,6 @@ sealed interface UiState {
 
 /** Which speech engine to use. Swapped by rebuild for now; belongs in settings later. */
 enum class TtsChoice { PLATFORM, KOKORO, SUPERTONIC }
+
+/** One line of the visible conversation. */
+data class Exchange(val fromUser: Boolean, val text: String)

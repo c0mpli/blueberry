@@ -13,6 +13,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -40,6 +46,7 @@ fun BlueberryApp(
     val screen by viewModel.screen.collectAsStateWithLifecycle()
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val catalogue by viewModel.catalogue.collectAsStateWithLifecycle()
+    val conversation by viewModel.conversation.collectAsStateWithLifecycle()
 
     // Back must never exit the launcher. On the drawer it returns home; on home it does nothing at
     // all, which is deliberate rather than an oversight.
@@ -54,6 +61,7 @@ fun BlueberryApp(
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         VoiceSurface(
             state = state,
+            conversation = conversation,
             onPressStart = viewModel::onPressStart,
             onSpeak = onSpeakRequested,
             onDismiss = viewModel::onDismiss,
@@ -87,6 +95,7 @@ fun BlueberryApp(
 @Composable
 private fun VoiceSurface(
     state: UiState,
+    conversation: List<Exchange>,
     onPressStart: () -> Unit,
     onSpeak: () -> Unit,
     onDismiss: () -> Unit,
@@ -110,11 +119,76 @@ private fun VoiceSurface(
                     onDragEnd = { if (travelled < -SWIPE_THRESHOLD_PX) onSwipeUp() },
                 ) { _, delta -> travelled += delta }
             },
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.BottomCenter,
     ) {
-        when (state) {
-            is UiState.Done -> ResultCard(state)
-            else -> VoiceStage(state)
+        Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            // History fills the space above and grows downward, so the newest line sits closest to
+            // the orb — the eye lands on the presence and reads upward only if it wants to.
+            Conversation(
+                conversation = conversation,
+                live = (state as? UiState.Listening)?.partial.orEmpty(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+            )
+            VoiceStage(state)
+            Spacer(Modifier.height(72.dp))
+        }
+    }
+}
+
+/**
+ * The exchange so far.
+ *
+ * Deliberately unadorned: no avatars, no timestamps, no bubbles with tails. A companion surface
+ * wants to feel like a conversation remembered, not a messaging app — and every piece of chrome
+ * added here is chrome the eye has to skip past to reach what was actually said.
+ */
+@Composable
+private fun Conversation(
+    conversation: List<Exchange>,
+    live: String,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    val lines = remember(conversation, live) {
+        if (live.isBlank()) conversation else conversation + Exchange(fromUser = true, text = live)
+    }
+
+    LaunchedEffect(lines.size, live) {
+        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.lastIndex)
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 28.dp),
+    ) {
+        items(lines.size) { i ->
+            val line = lines[i]
+            val newest = i == lines.lastIndex
+            Text(
+                text = line.text,
+                style = if (newest && !line.fromUser) {
+                    MaterialTheme.typography.headlineMedium
+                } else {
+                    MaterialTheme.typography.bodyLarge
+                },
+                color = if (line.fromUser) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onBackground
+                },
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Older turns recede rather than disappear, which is what makes the surface
+                    // feel continuous instead of modal.
+                    .alpha(if (newest) 1f else 0.38f),
+            )
         }
     }
 }
@@ -135,50 +209,25 @@ internal fun levelOf(state: UiState): Float =
 
 @Composable
 private fun VoiceStage(state: UiState) {
-    val visual = visualStateOf(state)
-    val level = levelOf(state)
-
-    val caption = when (state) {
-        is UiState.Idle -> "tap to speak"
-        is UiState.Listening -> "listening"
-        is UiState.Thinking -> "thinking"
-        else -> ""
-    }
-
-    val transcript = when (state) {
-        is UiState.Listening -> state.partial
-        is UiState.Thinking -> state.transcript
-        else -> ""
-    }
-
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(20.dp),
-        modifier = Modifier.padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        VoiceVisualizer(
-            state = visual,
-            level = level,
-            color = MaterialTheme.colorScheme.primary,
-        )
+        // The presence is always on screen, in the same place, in every state. Only its motion
+        // changes — moving it between states would read as a new screen rather than a new turn.
+        CompanionOrb(state = visualStateOf(state), level = levelOf(state))
 
-        // The caption is belt-and-braces. The motion should already say it, but "listening" costs
-        // one line and removes any doubt about whose turn it is.
         Text(
-            text = caption,
+            text = when (state) {
+                is UiState.Idle -> "tap to talk"
+                is UiState.Listening -> "listening"
+                is UiState.Thinking -> "thinking"
+                is UiState.Done -> ""
+            },
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.alpha(if (state is UiState.Idle) 0.55f else 0.9f),
+            modifier = Modifier.alpha(if (state is UiState.Idle) 0.5f else 0.85f),
         )
-
-        if (transcript.isNotBlank()) {
-            Text(
-                text = transcript,
-                style = MaterialTheme.typography.displaySmall,
-                color = MaterialTheme.colorScheme.onBackground,
-                textAlign = TextAlign.Center,
-            )
-        }
     }
 }
 

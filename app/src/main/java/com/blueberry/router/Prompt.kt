@@ -56,8 +56,15 @@ object Prompt {
     fun systemPrefix(ctx: RouteContext): String = buildString {
         append(TURN_USER)
         append(
-            "You route short spoken commands on an Android phone into one tool call.\n" +
-                "Input is often a mix of English and Hindi written in Latin script. Answer in the " +
+            // Identity first. Without it the model has nothing to be on a conversational turn, and
+            // a prompt that only describes routing makes it echo the question back rather than
+            // answer — "what is your name" came back as "What is your name?".
+            "You are Blueberry, a voice assistant built into an Android phone.\n" +
+                "You do two things: you carry out requests by calling one tool, and you answer " +
+                "questions by talking.\n" +
+                "When you are talking, reply as yourself in one or two short spoken sentences. " +
+                "Never repeat the question back. Never narrate what you are doing.\n" +
+                "Input is often a mix of English and Hindi written in Latin script; answer in the " +
                 "language the request arrived in.\n\n"
         )
 
@@ -122,8 +129,12 @@ object Prompt {
 
     /** The explain path. Shallower than a frontier model, and knowingly so. */
     fun explainSuffix(transcript: String): String =
-        "Answer in two or three short sentences, spoken aloud, no markdown.\n" +
-            "Request: " + transcript.trim() + "\n" +
+        // Addressed directly rather than as "Request: <text>". A labelled field invites a small
+        // model to continue the transcript instead of responding to it — "what is your name" came
+        // back as "What is your name?".
+        transcript.trim() + noThink + "\n\n" +
+            "Reply out loud in one or two short sentences. Answer directly; never repeat the " +
+            "question back, and never use markdown.\n" +
             TURN_END + TURN_MODEL
 
     private fun describeDefaults(defaults: DefaultsStore): String {
