@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.LaunchedEffect
@@ -170,25 +171,32 @@ private fun Conversation(
         items(lines.size) { i ->
             val line = lines[i]
             val newest = i == lines.lastIndex
-            Text(
-                text = line.text,
-                style = if (newest && !line.fromUser) {
-                    MaterialTheme.typography.headlineMedium
-                } else {
-                    MaterialTheme.typography.bodyLarge
-                },
-                color = if (line.fromUser) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onBackground
-                },
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Older turns recede rather than disappear, which is what makes the surface
-                    // feel continuous instead of modal.
-                    .alpha(if (newest) 1f else 0.38f),
-            )
+            // Sides, not labels: yours right, Blueberry's left. Centre-aligning both made it
+            // genuinely hard to tell who said what.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = if (line.fromUser) Arrangement.End else Arrangement.Start,
+            ) {
+                Text(
+                    text = line.text,
+                    style = if (newest && !line.fromUser) {
+                        MaterialTheme.typography.headlineMedium
+                    } else {
+                        MaterialTheme.typography.bodyLarge
+                    },
+                    color = if (line.fromUser) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onBackground
+                    },
+                    textAlign = if (line.fromUser) TextAlign.End else TextAlign.Start,
+                    modifier = Modifier
+                        .fillMaxWidth(0.82f)
+                        // Older turns recede rather than disappear, which keeps the surface
+                        // continuous instead of modal.
+                        .alpha(if (newest) 1f else 0.4f),
+                )
+            }
         }
     }
 }

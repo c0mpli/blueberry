@@ -73,6 +73,7 @@ class Speaker(private val context: Context) : TtsEngine {
      * Feed the answer as it grows. Only whole sentences are enqueued — handing the engine a
      * fragment mid-clause makes the prosody lurch, and it cannot un-say it once queued.
      */
+    @Synchronized
     override fun speakStreaming(textSoFar: String) {
         if (!ready) return
         // The first chunk is cut eagerly — it is the only one the user waits through.
@@ -87,9 +88,13 @@ class Speaker(private val context: Context) : TtsEngine {
     }
 
     /** The answer is complete: speak whatever is left after the last sentence boundary. */
+    @Synchronized
     override fun finish(fullText: String) {
         if (!ready) return
-        val tail = SentenceSplitter.speakable(fullText.substring(spokenUpTo.coerceAtMost(fullText.length)))
+        // If the final text is not the string that was streamed, the index is meaningless — speak
+        // nothing rather than a fragment starting mid-word.
+        val start = spokenUpTo.coerceIn(0, fullText.length)
+        val tail = SentenceSplitter.speakable(fullText.substring(start))
         spokenUpTo = fullText.length
         if (tail.isNotEmpty()) enqueue(tail)
     }
@@ -102,6 +107,11 @@ class Speaker(private val context: Context) : TtsEngine {
     }
 
     /** Barge-in, or dismissal. Stops immediately and drops anything queued. */
+    @Synchronized
+    override fun beginTurn() {
+        spokenUpTo = 0
+    }
+
     override fun stop() {
         tts?.stop()
         abandonFocus()

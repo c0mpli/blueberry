@@ -158,7 +158,7 @@ class LocalLlm(
 
                 val tools = ToolSpecs.inCategory(category)
                 if (category == ToolCategory.CHAT || tools.isEmpty()) {
-                    val text = explain(transcript)
+                    val text = converse(transcript)
                     // An empty generation rendered as an empty card, which looks exactly like a
                     // hang. Say something rather than nothing.
                     return@withContext if (text.isBlank()) {
@@ -180,7 +180,7 @@ class LocalLlm(
                     // A misclassification or a truncated decode must not dead-end in an error the
                     // user cannot act on. Answering in words is always a reasonable fallback.
                     Log.w(TAG, "tool call failed for category $category; answering instead")
-                    val text = explain(transcript)
+                    val text = converse(transcript)
                     if (text.isBlank()) LlmOutcome.Error("I didn't get an answer for that one.")
                     else LlmOutcome.Speak(text)
                 }
@@ -205,6 +205,26 @@ class LocalLlm(
         return ToolCategory.entries.firstOrNull { it.name.lowercase() == word } ?: ToolCategory.CHAT
     }
 
+    /**
+     * Conversation runs on its own context, not on the routing prefix.
+     *
+     * The KV cache is cleared and a short standalone prompt is prefilled instead, so none of the
+     * tool list, app catalogue or category examples can be echoed back as an answer. [ensurePrefix]
+     * restores the routing state on the next turn that needs it, which is a ~120ms disk read.
+     */
+    private fun converse(transcript: String): String {
+        LlamaBridge.nativeClearKv(lctx)
+        loadedPrefixHash = null
+        prefixTokens = 0
+
+        val prompt = Prompt.conversationPrompt(transcript)
+        val tokens = LlamaBridge.nativeTokenize(model, prompt, true, true) ?: return ""
+        if (decodeChunked(tokens) != 0) return ""
+        prefixTokens = tokens.size
+
+        return generate(suffix = "", grammar = "", maxTokens = MAX_PROSE_TOKENS, stream = true)
+    }
+
     private fun explain(transcript: String): String =
         generate(
             suffix = Prompt.explainSuffix(transcript),
@@ -212,7 +232,10 @@ class LocalLlm(
             grammar = "",
             maxTokens = MAX_PROSE_TOKENS,
             stream = true,
-        ).trim()
+        )
+        // Deliberately NOT trimmed. The streamed callbacks emit this same string as it grows, and
+        // the speaker tracks how far it has spoken by index into it. Trimming here shifts every
+        // index and the final chunk gets sliced mid-word — "e is Blueberry.".
 
     // ---------------------------------------------------------------------------------------
     // The KV prefix — the thing that makes this fast enough to exist
@@ -247,7 +270,7 @@ class LocalLlm(
 
         Log.i(TAG, "prefilling ${tokens.size} prefix tokens...")
         val t0 = SystemClock.elapsedRealtime()
-        val rc = LlamaBridge.nativeDecode(lctx, tokens)
+        val rc = decodeChunked(tokens)
         check(rc == 0) { "prefill failed ($rc)" }
         val prefillMs = SystemClock.elapsedRealtime() - t0
 
@@ -278,12 +301,17 @@ class LocalLlm(
         budgetMs: Long = DEFAULT_BUDGET_MS,
     ): String {
         val deadline = SystemClock.elapsedRealtime() + budgetMs
-        LlamaBridge.nativeTrimTo(lctx, prefixTokens)
 
-        val t0 = SystemClock.elapsedRealtime()
-        val tokens = LlamaBridge.nativeTokenize(model, suffix, false, true) ?: return ""
-        if (LlamaBridge.nativeDecode(lctx, tokens) != 0) return ""
-        val prefillMs = SystemClock.elapsedRealtime() - t0
+        // An empty suffix means the caller has already placed the full context (the conversation
+        // path does this) — trimming or decoding again would corrupt it.
+        var prefillMs = 0L
+        if (suffix.isNotEmpty()) {
+            LlamaBridge.nativeTrimTo(lctx, prefixTokens)
+            val t0 = SystemClock.elapsedRealtime()
+            val tokens = LlamaBridge.nativeTokenize(model, suffix, false, true) ?: return ""
+            if (decodeChunked(tokens) != 0) return ""
+            prefillMs = SystemClock.elapsedRealtime() - t0
+        }
 
         val ts = SystemClock.elapsedRealtime()
         val sampler = LlamaBridge.nativeNewSampler(model, grammar, "root", TEMP, TOP_K, TOP_P, SEED)
@@ -326,7 +354,7 @@ class LocalLlm(
                 if (drc != 0) break
             }
             val decodeMs = SystemClock.elapsedRealtime() - decodeStart
-            Log.i(TAG, "prefill ${prefillMs}ms (${tokens.size} tok), decode ${decodeMs}ms ($produced tok)")
+            Log.i(TAG, "prefill ${prefillMs}ms, decode ${decodeMs}ms ($produced tok)")
             val text = bytes.toString(Charsets.UTF_8.name())
             if (stream) onPartialAnswer?.invoke(text)
             text
@@ -370,6 +398,25 @@ class LocalLlm(
         }
     }
 
+    /**
+     * Decode in slices no larger than the accepted batch.
+     *
+     * llama.cpp aborts the whole process — `ggml_abort`, no exception to catch — when a single
+     * batch exceeds `n_batch`. Growing the system prompt by fifty tokens was enough to trigger it.
+     * Chunking here means prompt length can never crash the app again, whatever the native config
+     * happens to be.
+     */
+    private fun decodeChunked(tokens: IntArray): Int {
+        var offset = 0
+        while (offset < tokens.size) {
+            val end = minOf(offset + DECODE_CHUNK, tokens.size)
+            val rc = LlamaBridge.nativeDecode(lctx, tokens.copyOfRange(offset, end))
+            if (rc != 0) return rc
+            offset = end
+        }
+        return 0
+    }
+
     private fun fnv1a(text: String): String {
         var acc = 0xcbf29ce484222325UL
         for (ch in text) {
@@ -406,5 +453,8 @@ class LocalLlm(
          * the only thing that can stop a runaway decode is the loop checking a clock itself.
          */
         const val DEFAULT_BUDGET_MS = 9_000L
+
+        /** Must stay at or below the context's n_ubatch; 512 is what the JNI configures. */
+        const val DECODE_CHUNK = 512
     }
 }

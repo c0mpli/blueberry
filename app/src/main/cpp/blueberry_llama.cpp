@@ -112,9 +112,13 @@ Java_com_blueberry_llm_LlamaBridge_nativeNewContext(JNIEnv *, jobject, jlong hmo
     // which point the prefill appears to hang rather than fail.
     params.n_outputs_max = 1;
 
-    // A prompt longer than n_batch is split automatically, so a modest batch costs a little
-    // prefill throughput and saves a lot of compute buffer.
-    params.n_batch       = 512;
+    // n_batch is the largest batch llama_decode will ACCEPT; submitting more aborts the process
+    // via ggml_abort rather than splitting. A prompt edit that pushed the prefix from 476 to 527
+    // tokens crashed on exactly this. It is set to the full context so no prompt can exceed it.
+    //
+    // n_ubatch is what actually sizes the compute buffer, so keeping it at 512 means the generous
+    // n_batch costs nothing in memory.
+    params.n_batch       = static_cast<uint32_t>(n_ctx);
     params.n_ubatch      = 512;
 
     llama_context *ctx = llama_init_from_model(model, params);

@@ -95,13 +95,18 @@ fun CompanionOrb(
         val radius = base * (0.62f + pulse)
 
         // Halo first, widest and faintest, so the core sits inside a glow rather than on top of it.
+        //
+        // The gradient is weighted so the bright part hugs the body: a plain two-stop fade from the
+        // centre spreads the light so evenly that at these alphas it vanishes into a near-black
+        // background and the orb reads as a flat disc.
         for (ring in HALO_RINGS downTo 1) {
-            val spread = radius * (1f + 0.22f * ring + 0.30f * amplitude)
+            val spread = radius * (1f + 0.30f * ring + 0.45f * amplitude)
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(
-                        HALO.copy(alpha = 0.16f * presence / ring),
-                        Color.Transparent,
+                    colorStops = arrayOf(
+                        0.0f to HALO.copy(alpha = 0.30f * presence / ring),
+                        0.55f to HALO.copy(alpha = 0.18f * presence / ring),
+                        1.0f to Color.Transparent,
                     ),
                     center = centre,
                     radius = spread,
@@ -146,4 +151,4 @@ private val CORE = Color(0xFF8F7BE8)
 private val CORE_DEEP = Color(0xFF4B3A8F)
 private val HALO = Color(0xFF9B8BF0)
 private val RIM = Color(0xFFE6DEFF)
-private const val HALO_RINGS = 3
+private const val HALO_RINGS = 4

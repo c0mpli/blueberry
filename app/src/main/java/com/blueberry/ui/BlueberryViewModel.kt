@@ -120,6 +120,18 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     /** Set when the partial gate started routing speculatively, so the final does not redo it. */
     private var speculated: String? = null
 
+    /**
+     * One turn at a time, per utterance.
+     *
+     * Speculative routing arms a timer whenever a partial stops changing, and a partial changes on
+     * every word — so without this, speaking a sentence fired a complete route-answer-speak cycle
+     * per word. The log for one Hinglish sentence showed seven turns in four seconds, each talking
+     * over the last. The guard is cleared when a new utterance begins, not when a turn ends,
+     * because everything after the first word of a sentence belongs to that same utterance.
+     */
+    @Volatile
+    private var turnInFlight = false
+
     init {
         viewModelScope.launch { refreshCatalogue() }
         catalogueCallback = appCatalogue.observeChanges {
@@ -240,6 +252,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         session = Session()
         lastPartial = ""
         speculated = null
+        turnInFlight = false
         // Barge-in: a new turn silences the old answer immediately, before the mic even opens.
         speaker.stop()
         speaking = policy.shouldSpeak()
@@ -249,6 +262,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onDismiss() {
         stabilityJob?.cancel()
+        turnInFlight = false
         speaker.stop()
         transcripts.stop()
         session.reset()
@@ -376,6 +390,13 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun runTurn(text: String, ctx: RouteContext) {
+        if (turnInFlight) {
+            Log.i(TAG, "ignoring \"$text\" — a turn is already running for this utterance")
+            return
+        }
+        turnInFlight = true
+        // Every turn starts the speaker from zero. Its progress index belongs to one answer.
+        speaker.beginTurn()
         remember(Exchange(fromUser = true, text = text))
         speaking = policy.shouldSpeak()
         Log.i(TAG, "turn \"$text\" speaking=$speaking")
@@ -387,10 +408,14 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
             // A streamed answer has already been shown token by token; replacing it with the same
             // text would flicker the card.
             if (result is RouterResult.Answer && _uiState.value.let { it is UiState.Done && it.result is RouterResult.Answer }) {
-                // Already streamed to the card; just settle on the final text and speak whatever
-                // sentence fragment came after the last boundary.
+                // Already streamed to the card; settle on the final text and speak whatever
+                // fragment came after the last boundary. This branch skips complete(), which is
+                // where the reply was being recorded — so the transcript only ever showed the
+                // user's own words.
                 _uiState.value = UiState.Done(result, fired = false)
+                remember(Exchange(fromUser = false, text = describe(result)))
                 speakIfAppropriate(result)
+                turnInFlight = false
             } else {
                 complete(text, result, ctx)
             }
@@ -440,6 +465,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = UiState.Done(result, fired)
         remember(Exchange(fromUser = false, text = describe(result)))
         speakIfAppropriate(result)
+        turnInFlight = false
     }
 
     /** What the companion "said", for the transcript. */

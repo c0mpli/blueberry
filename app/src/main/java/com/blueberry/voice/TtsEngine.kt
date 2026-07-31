@@ -38,6 +38,15 @@ interface TtsEngine {
     /** Barge-in. Stop immediately and drop anything queued. */
     fun stop()
 
+    /**
+     * Forget how far the previous answer was spoken.
+     *
+     * [speakStreaming] tracks progress as an index into the growing answer, so that index is only
+     * meaningful for one answer. Carrying it into the next turn slices the new text from a stale
+     * offset and speaks a fragment starting mid-word — a reply beginning "h!" rather than "Ah!".
+     */
+    fun beginTurn()
+
     fun release()
 }
 
@@ -113,18 +122,36 @@ object SentenceSplitter {
      * and nothing is lost downstream because the rest catches up on its own.
      */
     fun firstBoundary(text: String): Int {
-        if (text.length < FIRST_CHUNK_MIN) return 0
-        // The EARLIEST break past the minimum, never the latest: preferring the last punctuation in
-        // range meant a short sentence was returned whole, which is the wait this exists to avoid.
-        var i = FIRST_CHUNK_MIN
+        // Punctuation first, at ANY length. "Hello!" is six characters and is both the fastest
+        // possible first chunk and a natural place to breathe. Requiring a minimum length here is
+        // what produced "Hello! How can" / "I help you today?" — a pause dropped into the middle of
+        // a phrase, which sounds far worse than the fraction of a second it saved.
+        var i = 0
         while (i < text.length && i < FIRST_CHUNK_MAX) {
-            if (text[i].isWhitespace()) return i
+            val c = text[i]
+            if (c == '.' || c == '!' || c == '?' || c == ',' || c == ';' || c == ':' || c == '\n') {
+                val next = text.getOrNull(i + 1)
+                if ((next == null || next.isWhitespace()) && i + 1 >= FIRST_PUNCT_MIN) return i + 1
+            }
             i++
         }
-        // No boundary yet and the text is still growing: wait rather than split a word.
-        return if (text.length >= FIRST_CHUNK_MAX) FIRST_CHUNK_MAX else 0
+
+        // No natural break anywhere in range. Only then fall back to a word boundary, and only once
+        // the sentence has run long enough that waiting for punctuation would cost more than the
+        // seam does.
+        if (text.length < FIRST_CHUNK_MAX) return 0
+        var j = FIRST_CHUNK_MAX
+        while (j > FIRST_WORD_MIN) {
+            if (text[j].isWhitespace()) return j
+            j--
+        }
+        return 0
     }
 
-    private const val FIRST_CHUNK_MIN = 14
-    private const val FIRST_CHUNK_MAX = 48
+    /** "Hi." is a legitimate first chunk; anything shorter is a stutter. */
+    private const val FIRST_PUNCT_MIN = 3
+
+    /** Only used when a sentence runs this far with no punctuation at all. */
+    private const val FIRST_WORD_MIN = 24
+    private const val FIRST_CHUNK_MAX = 64
 }

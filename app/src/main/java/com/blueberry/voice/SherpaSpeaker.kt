@@ -80,6 +80,7 @@ abstract class SherpaSpeaker(
     // Speaking
     // ---------------------------------------------------------------------------------------
 
+    @Synchronized
     override fun speakStreaming(textSoFar: String) {
         if (!ready) return
         // The first chunk is cut eagerly — it is the only one the user waits through.
@@ -93,9 +94,13 @@ abstract class SherpaSpeaker(
         if (chunk.isNotEmpty()) enqueue(chunk)
     }
 
+    @Synchronized
     override fun finish(fullText: String) {
         if (!ready) return
-        val tail = SentenceSplitter.speakable(fullText.substring(spokenUpTo.coerceAtMost(fullText.length)))
+        // If the final text is not the string that was streamed, the index is meaningless — speak
+        // nothing rather than a fragment starting mid-word.
+        val start = spokenUpTo.coerceIn(0, fullText.length)
+        val tail = SentenceSplitter.speakable(fullText.substring(start))
         spokenUpTo = fullText.length
         if (tail.isNotEmpty()) enqueue(tail)
     }
@@ -104,6 +109,11 @@ abstract class SherpaSpeaker(
         if (!ready || text.isBlank()) return
         spokenUpTo = 0
         SentenceSplitter.speakable(text).takeIf { it.isNotEmpty() }?.let { enqueue(it) }
+    }
+
+    @Synchronized
+    override fun beginTurn() {
+        spokenUpTo = 0
     }
 
     override fun stop() {
