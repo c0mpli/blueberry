@@ -37,9 +37,13 @@ class KokoroSpeaker(
      * Kokoro v1.0 orders speakers alphabetically, so index 3 is `af_heart` — the highest-graded
      * voice in Kokoro's own table. [numSpeakers] is logged at load so this can be checked.
      */
-    private val speakerId: Int = DEFAULT_SPEAKER,
+    speakerId: Int = DEFAULT_SPEAKER,
     private val speed: Float = 1.0f,
 ) : TtsEngine {
+
+    /** Auditioning voices should not need a rebuild; 53 of them is too many to guess at. */
+    @Volatile
+    var speakerId: Int = speakerId
 
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "blueberry-tts") }
 
@@ -131,16 +135,19 @@ class KokoroSpeaker(
 
     override fun speakStreaming(textSoFar: String) {
         if (!ready) return
-        val boundary = SentenceSplitter.lastBoundary(textSoFar, spokenUpTo)
+        // The first chunk is cut eagerly — it is the only one the user waits through.
+        val boundary =
+            if (spokenUpTo == 0) SentenceSplitter.firstBoundary(textSoFar)
+            else SentenceSplitter.lastBoundary(textSoFar, spokenUpTo)
         if (boundary <= spokenUpTo) return
-        val chunk = textSoFar.substring(spokenUpTo, boundary).trim()
+        val chunk = SentenceSplitter.speakable(textSoFar.substring(spokenUpTo, boundary))
         spokenUpTo = boundary
         if (chunk.isNotEmpty()) enqueue(chunk)
     }
 
     override fun finish(fullText: String) {
         if (!ready) return
-        val tail = fullText.substring(spokenUpTo.coerceAtMost(fullText.length)).trim()
+        val tail = SentenceSplitter.speakable(fullText.substring(spokenUpTo.coerceAtMost(fullText.length)))
         spokenUpTo = fullText.length
         if (tail.isNotEmpty()) enqueue(tail)
     }
@@ -148,7 +155,7 @@ class KokoroSpeaker(
     override fun say(text: String) {
         if (!ready || text.isBlank()) return
         spokenUpTo = 0
-        enqueue(text.trim())
+        SentenceSplitter.speakable(text).takeIf { it.isNotEmpty() }?.let { enqueue(it) }
     }
 
     override fun stop() {

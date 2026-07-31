@@ -21,5 +21,14 @@
                 <action android:name="com.blueberry.PROBE_LLM" />
             </intent-filter>
         </receiver>
+
+        <!-- Debug only. Speaks a line in a chosen Kokoro voice so they can be auditioned. -->
+        <receiver
+            android:name="com.blueberry.debug.VoiceProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.blueberry.SAY" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

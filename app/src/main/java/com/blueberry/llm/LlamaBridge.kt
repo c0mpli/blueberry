@@ -32,7 +32,8 @@ object LlamaBridge {
     external fun nativeContextSize(ctx: Long): Int
 
     external fun nativeTokenize(model: Long, text: String, addSpecial: Boolean, parseSpecial: Boolean): IntArray?
-    external fun nativeTokenToPiece(model: Long, token: Int): String
+    /** Raw bytes: a token can be half of a multi-byte character. See the JNI comment. */
+    external fun nativeTokenToPieceBytes(model: Long, token: Int): ByteArray
     external fun nativeIsEog(model: Long, token: Int): Boolean
 
     external fun nativeDecode(ctx: Long, tokens: IntArray): Int

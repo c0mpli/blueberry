@@ -166,16 +166,34 @@ Java_com_blueberry_llm_LlamaBridge_nativeTokenize(JNIEnv *env, jobject, jlong hm
     return out;
 }
 
-JNIEXPORT jstring JNICALL
-Java_com_blueberry_llm_LlamaBridge_nativeTokenToPiece(JNIEnv *env, jobject, jlong hmodel, jint token) {
+/**
+ * Returns the token's raw bytes, NOT a jstring.
+ *
+ * A token is not guaranteed to be a whole UTF-8 character: multi-byte codepoints — accents, curly
+ * quotes, emoji, any Devanagari — are routinely split across two tokens. `NewStringUTF` requires
+ * valid Modified UTF-8 and *aborts the process* on a partial sequence:
+ *
+ *   JNI DETECTED ERROR IN APPLICATION: input is not valid Modified UTF-8
+ *
+ * So the bytes are handed to Kotlin, which accumulates them across tokens and decodes once the
+ * sequence is complete. That is also why this cannot simply validate-and-drop: the dropped byte
+ * would corrupt the character its partner completes.
+ */
+JNIEXPORT jbyteArray JNICALL
+Java_com_blueberry_llm_LlamaBridge_nativeTokenToPieceBytes(JNIEnv *env, jobject, jlong hmodel, jint token) {
     llama_model *model = as_model(hmodel);
-    if (model == nullptr) return env->NewStringUTF("");
+    jbyteArray empty = env->NewByteArray(0);
+    if (model == nullptr) return empty;
     const llama_vocab *vocab = llama_model_get_vocab(model);
 
     char buf[256];
     const int32_t n = llama_token_to_piece(vocab, token, buf, sizeof(buf), 0, /*special=*/false);
-    if (n < 0) return env->NewStringUTF("");
-    return env->NewStringUTF(std::string(buf, n).c_str());
+    if (n <= 0) return empty;
+
+    jbyteArray out = env->NewByteArray(n);
+    if (out == nullptr) return empty;
+    env->SetByteArrayRegion(out, 0, n, reinterpret_cast<const jbyte *>(buf));
+    return out;
 }
 
 JNIEXPORT jboolean JNICALL

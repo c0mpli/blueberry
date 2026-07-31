@@ -75,10 +75,13 @@ class Speaker(private val context: Context) : TtsEngine {
      */
     override fun speakStreaming(textSoFar: String) {
         if (!ready) return
-        val boundary = SentenceSplitter.lastBoundary(textSoFar, spokenUpTo)
+        // The first chunk is cut eagerly — it is the only one the user waits through.
+        val boundary =
+            if (spokenUpTo == 0) SentenceSplitter.firstBoundary(textSoFar)
+            else SentenceSplitter.lastBoundary(textSoFar, spokenUpTo)
         if (boundary <= spokenUpTo) return
 
-        val chunk = textSoFar.substring(spokenUpTo, boundary).trim()
+        val chunk = SentenceSplitter.speakable(textSoFar.substring(spokenUpTo, boundary))
         spokenUpTo = boundary
         if (chunk.isNotEmpty()) enqueue(chunk)
     }
@@ -86,7 +89,7 @@ class Speaker(private val context: Context) : TtsEngine {
     /** The answer is complete: speak whatever is left after the last sentence boundary. */
     override fun finish(fullText: String) {
         if (!ready) return
-        val tail = fullText.substring(spokenUpTo.coerceAtMost(fullText.length)).trim()
+        val tail = SentenceSplitter.speakable(fullText.substring(spokenUpTo.coerceAtMost(fullText.length)))
         spokenUpTo = fullText.length
         if (tail.isNotEmpty()) enqueue(tail)
     }
@@ -95,7 +98,7 @@ class Speaker(private val context: Context) : TtsEngine {
     override fun say(text: String) {
         if (!ready || text.isBlank()) return
         reset()
-        enqueue(text.trim())
+        SentenceSplitter.speakable(text).takeIf { it.isNotEmpty() }?.let { enqueue(it) }
     }
 
     /** Barge-in, or dismissal. Stops immediately and drops anything queued. */

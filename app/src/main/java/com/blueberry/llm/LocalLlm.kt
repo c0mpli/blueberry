@@ -294,7 +294,9 @@ class LocalLlm(
         }
 
         return try {
-            val out = StringBuilder()
+            // Bytes, not characters: a multi-byte codepoint can span two tokens, so decoding each
+            // token individually would both corrupt text and previously aborted the process.
+            val bytes = java.io.ByteArrayOutputStream()
             var produced = 0
             val decodeStart = SystemClock.elapsedRealtime()
             for (i in 0 until maxTokens) {
@@ -313,8 +315,10 @@ class LocalLlm(
                 // per token. The stacks empty out and llama_grammar_reject_candidates trips
                 // GGML_ASSERT(!stacks.empty()), which aborts the whole process — it presents as the
                 // app vanishing mid-answer rather than as an error.
-                out.append(LlamaBridge.nativeTokenToPiece(model, token))
-                if (stream && (i % STREAM_EVERY == 0)) onPartialAnswer?.invoke(out.toString())
+                bytes.write(LlamaBridge.nativeTokenToPieceBytes(model, token))
+                if (stream && (i % STREAM_EVERY == 0)) {
+                    onPartialAnswer?.invoke(bytes.toString(Charsets.UTF_8.name()))
+                }
                 produced++
                 val tDec = SystemClock.elapsedRealtime()
                 val drc = LlamaBridge.nativeDecode(lctx, intArrayOf(token))
@@ -323,8 +327,9 @@ class LocalLlm(
             }
             val decodeMs = SystemClock.elapsedRealtime() - decodeStart
             Log.i(TAG, "prefill ${prefillMs}ms (${tokens.size} tok), decode ${decodeMs}ms ($produced tok)")
-            if (stream) onPartialAnswer?.invoke(out.toString())
-            out.toString()
+            val text = bytes.toString(Charsets.UTF_8.name())
+            if (stream) onPartialAnswer?.invoke(text)
+            text
         } finally {
             LlamaBridge.nativeFreeSampler(sampler)
         }

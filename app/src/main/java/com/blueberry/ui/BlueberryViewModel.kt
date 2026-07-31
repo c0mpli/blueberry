@@ -23,6 +23,7 @@ import com.blueberry.voice.KokoroSpeaker
 import com.blueberry.voice.Speaker
 import com.blueberry.voice.SpeechPolicy
 import com.blueberry.voice.TtsEngine
+import com.blueberry.voice.VoiceAudition
 import com.blueberry.voice.TranscriptSourceFactory
 import com.blueberry.voice.TranscriptSource
 import android.net.ConnectivityManager
@@ -113,6 +114,31 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
             transcripts.events.collect(::onAsrEvent)
         }
         viewModelScope.launch(Dispatchers.IO) { prepareModel() }
+
+        // Debug builds can audition voices over adb; in release nothing ever calls this.
+        VoiceAudition.handler = { sid, text, sweep -> audition(sid, text, sweep) }
+    }
+
+    /**
+     * Speak [text] in one voice, or sweep a spread of them announcing each by number.
+     *
+     * Which of 53 voices sounds most human is a listening decision, so this makes hearing them cost
+     * a broadcast instead of a rebuild.
+     */
+    private fun audition(sid: Int, text: String, sweep: Boolean) {
+        val kokoro = speaker as? KokoroSpeaker ?: run {
+            Log.w(TAG, "audition ignored: engine is ${speaker.name}")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val voices = if (sweep) SWEEP_VOICES else listOf(sid.takeIf { it >= 0 } ?: kokoro.speakerId)
+            for (v in voices) {
+                kokoro.speakerId = v
+                kokoro.say("Voice $v. $text")
+                // Serial, so they can be told apart; synthesis is roughly realtime.
+                delay(AUDITION_GAP_MS)
+            }
+        }
     }
 
     /**
@@ -414,6 +440,10 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
          * Shorter than the platform's ~1s endpointing, which is the whole point.
          */
         const val SPECULATE_AFTER_MS = 350L
+
+        /** A spread across Kokoro's English female and male voices, not every one of the 53. */
+        val SWEEP_VOICES = listOf(0, 2, 3, 6, 9, 11, 14)
+        const val AUDITION_GAP_MS = 4_000L
         val MODEL_PRESET = ModelRepo.Preset.QWEN3_0_6B
 
         /**
