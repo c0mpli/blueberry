@@ -26,12 +26,15 @@ import java.util.Locale
  * `TextToSpeech` binds to a remote service and costs several hundred milliseconds, which is far too
  * much to pay per utterance.
  */
-class Speaker(private val context: Context) {
+class Speaker(private val context: Context) : TtsEngine {
 
     private var tts: TextToSpeech? = null
 
     @Volatile
-    private var ready = false
+    override var ready: Boolean = false
+        private set
+
+    override val name: String get() = "Android TextToSpeech"
 
     /** How much of the current answer has already been handed to the engine. */
     private var spokenUpTo = 0
@@ -45,7 +48,7 @@ class Speaker(private val context: Context) {
     @Volatile
     var onDone: (() -> Unit)? = null
 
-    fun warmUp() {
+    override fun warmUp() {
         if (tts != null) return
         tts = TextToSpeech(context) { status ->
             ready = status == TextToSpeech.SUCCESS
@@ -70,9 +73,9 @@ class Speaker(private val context: Context) {
      * Feed the answer as it grows. Only whole sentences are enqueued — handing the engine a
      * fragment mid-clause makes the prosody lurch, and it cannot un-say it once queued.
      */
-    fun speakStreaming(textSoFar: String) {
+    override fun speakStreaming(textSoFar: String) {
         if (!ready) return
-        val boundary = lastSentenceEnd(textSoFar, from = spokenUpTo)
+        val boundary = SentenceSplitter.lastBoundary(textSoFar, spokenUpTo)
         if (boundary <= spokenUpTo) return
 
         val chunk = textSoFar.substring(spokenUpTo, boundary).trim()
@@ -81,7 +84,7 @@ class Speaker(private val context: Context) {
     }
 
     /** The answer is complete: speak whatever is left after the last sentence boundary. */
-    fun finish(fullText: String) {
+    override fun finish(fullText: String) {
         if (!ready) return
         val tail = fullText.substring(spokenUpTo.coerceAtMost(fullText.length)).trim()
         spokenUpTo = fullText.length
@@ -89,14 +92,14 @@ class Speaker(private val context: Context) {
     }
 
     /** Speak a complete short line — a clarification question, or the morning brief. */
-    fun say(text: String) {
+    override fun say(text: String) {
         if (!ready || text.isBlank()) return
         reset()
         enqueue(text.trim())
     }
 
     /** Barge-in, or dismissal. Stops immediately and drops anything queued. */
-    fun stop() {
+    override fun stop() {
         tts?.stop()
         abandonFocus()
         reset()
@@ -106,22 +109,12 @@ class Speaker(private val context: Context) {
         spokenUpTo = 0
     }
 
-    fun release() {
+    override fun release() {
         tts?.stop()
         tts?.shutdown()
         tts = null
         ready = false
         abandonFocus()
-    }
-
-    /** Ringer mode is respected: silent means silent. */
-    fun shouldSpeak(): Boolean {
-        val mode = audioManager?.ringerMode
-        // NORMAL only. Vibrate and silent both mean the user does not want the phone talking —
-        // but log it, because "no voice" and "phone is on vibrate" look identical from outside.
-        val ok = mode == AudioManager.RINGER_MODE_NORMAL
-        if (!ok) Log.i(TAG, "not speaking: ringer mode is $mode (0=silent 1=vibrate 2=normal)")
-        return ok
     }
 
     private fun enqueue(text: String) {
@@ -168,25 +161,6 @@ class Speaker(private val context: Context) {
         }
     }
 
-    /**
-     * Index just past the last sentence terminator in `[from, end)`, or [from] if there is none.
-     *
-     * Deliberately conservative: a decimal point or an abbreviation would otherwise split a
-     * sentence mid-number, so a terminator only counts when followed by whitespace or the end.
-     */
-    private fun lastSentenceEnd(text: String, from: Int): Int {
-        var best = from
-        var i = from
-        while (i < text.length) {
-            val c = text[i]
-            if (c == '.' || c == '!' || c == '?' || c == '\n') {
-                val next = text.getOrNull(i + 1)
-                if (next == null || next.isWhitespace()) best = i + 1
-            }
-            i++
-        }
-        return best
-    }
 
     private companion object {
         const val TAG = "Speaker"

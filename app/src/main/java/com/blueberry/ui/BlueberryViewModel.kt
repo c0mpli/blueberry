@@ -19,7 +19,10 @@ import com.blueberry.llm.ModelRepo
 import com.blueberry.llm.SwappableLlm
 import com.blueberry.tools.IntentFactory
 import com.blueberry.voice.AsrEvent
+import com.blueberry.voice.KokoroSpeaker
 import com.blueberry.voice.Speaker
+import com.blueberry.voice.SpeechPolicy
+import com.blueberry.voice.TtsEngine
 import com.blueberry.voice.TranscriptSourceFactory
 import com.blueberry.voice.TranscriptSource
 import android.net.ConnectivityManager
@@ -62,11 +65,23 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
      */
     private val transcripts: TranscriptSource = TranscriptSourceFactory.create(app)
 
+    private val policy = SpeechPolicy(app)
+
     /**
-     * Built at startup, not per utterance: constructing a TextToSpeech binds to a remote service and
-     * costs several hundred milliseconds.
+     * Kokoro when its weights are on the device, the platform engine otherwise.
+     *
+     * Built at startup either way: constructing a TextToSpeech binds to a remote service, and
+     * loading Kokoro reads 113 MB of int8 weights — neither belongs on the critical path.
      */
-    private val speaker = Speaker(app).also { it.warmUp() }
+    private val speaker: TtsEngine = run {
+        // Created here so the directory is owned by the app: one made by `adb push` belongs to
+        // shell, and the app then cannot read into it.
+        val dir = File(app.getExternalFilesDir(null), "tts/kokoro-int8-multi-lang-v1_0").apply { mkdirs() }
+        val engine: TtsEngine =
+            if (USE_KOKORO && KokoroSpeaker.isInstalled(dir)) KokoroSpeaker(dir) else Speaker(app)
+        Log.i(TAG, "speech engine: ${engine.name}")
+        engine.also { it.warmUp() }
+    }
 
     private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -186,7 +201,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
         speculated = null
         // Barge-in: a new turn silences the old answer immediately, before the mic even opens.
         speaker.stop()
-        speaking = speaker.shouldSpeak()
+        speaking = policy.shouldSpeak()
         _uiState.value = UiState.Listening("", 0f)
         transcripts.start()
     }
@@ -318,7 +333,7 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun runTurn(text: String, ctx: RouteContext) {
-        speaking = speaker.shouldSpeak()
+        speaking = policy.shouldSpeak()
         Log.i(TAG, "turn \"$text\" speaking=$speaking")
         _uiState.value = UiState.Thinking(text)
         run {
@@ -400,6 +415,18 @@ class BlueberryViewModel(app: Application) : AndroidViewModel(app) {
          */
         const val SPECULATE_AFTER_MS = 350L
         val MODEL_PRESET = ModelRepo.Preset.QWEN3_0_6B
+
+        /**
+         * Kokoro loads and reports 53 speakers at 24 kHz, but is off by default until its cost is
+         * actually measured on a clean device.
+         *
+         * It was briefly blamed for an LLM prefill regression (1380ms -> ~15000ms for the same 47
+         * tokens). That was wrong: the regression persisted with Kokoro gated off, with its files
+         * deleted from the device, and with the CPU governor ramped to 1.78GHz — so it is a
+         * property of the handset's state after prolonged testing (swap pressure), not of loading
+         * a second model. Re-measure from a fresh boot before drawing any conclusion.
+         */
+        const val USE_KOKORO = false
 
         /** Includes the one-off cold prefill on the first turn after a catalogue change. */
         const val MODEL_TIMEOUT_MS = 20_000L

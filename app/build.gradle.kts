@@ -84,6 +84,10 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
+    // sherpa-onnx, vendored as an AAR: it is not on Maven Central. The static-link build bundles
+    // ONNX Runtime, so this is the only artifact needed. Fetched by scripts/fetch-sherpa.sh.
+    implementation(files("libs/sherpa-onnx-1.13.4.aar"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
